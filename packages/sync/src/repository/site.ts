@@ -47,7 +47,7 @@ export class SiteRepository extends BaseRepository<Site> {
 
     siteSchema.parse(entity);
 
-    return this.executeAtomicMutation('CREATE', entity, 0, {
+    return this.executeAtomicMutation('CREATE', entity, null, {
       id: entity.id,
       projectId: entity.projectId,
       name: entity.name,
@@ -67,10 +67,11 @@ export class SiteRepository extends BaseRepository<Site> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const updatedEntity: Site = {
       ...existing,
       ...patch,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       updatedAt: now,
     };
 
@@ -79,7 +80,7 @@ export class SiteRepository extends BaseRepository<Site> {
     return this.executeAtomicMutation(
       'UPDATE',
       updatedEntity,
-      existing.version,
+      baseVersion,
       patch as Record<string, unknown>
     );
   }
@@ -94,9 +95,10 @@ export class SiteRepository extends BaseRepository<Site> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const deletedEntity: Site = {
       ...existing,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       isDeleted: true,
       deletedAt: now,
       updatedAt: now,
@@ -105,7 +107,7 @@ export class SiteRepository extends BaseRepository<Site> {
     return this.executeAtomicMutation(
       'DELETE',
       deletedEntity,
-      existing.version,
+      baseVersion,
       { id, isDeleted: true, deletedAt: now }
     );
   }

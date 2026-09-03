@@ -35,8 +35,11 @@ describe('SyncStatusService', () => {
 
     const pendingOps = await statusService.getPendingOperations(context.deviceId);
     expect(pendingOps).toHaveLength(2);
+    // Order must be by monotonically ascending localSeq — p1 was created first
     expect(pendingOps[0].entityId).toBe(p1.id);
     expect(pendingOps[1].entityId).toBe(p2.id);
+    // localSeq must be ascending
+    expect(pendingOps[0].localSeq!).toBeLessThan(pendingOps[1].localSeq!);
   });
 
   it('queries last sync timestamp and sequence cursor', async () => {

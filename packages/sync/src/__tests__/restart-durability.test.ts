@@ -75,6 +75,8 @@ describe('Restart-Persistence Durability (Simulated App Restart)', () => {
 
     const createOps = queuedOps.filter((o) => o.operationType === 'CREATE');
     expect(createOps).toHaveLength(4);
+    // CREATE operations always carry null baseVersion — never 0
+    expect(createOps.every((o) => o.baseVersion === null)).toBe(true);
 
     const updateOps = queuedOps.filter((o) => o.operationType === 'UPDATE');
     expect(updateOps).toHaveLength(1);

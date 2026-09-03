@@ -45,7 +45,7 @@ export class ProjectRepository extends BaseRepository<Project> {
 
     projectSchema.parse(entity);
 
-    return this.executeAtomicMutation('CREATE', entity, 0, {
+    return this.executeAtomicMutation('CREATE', entity, null, {
       id: entity.id,
       name: entity.name,
       code: entity.code,
@@ -64,10 +64,12 @@ export class ProjectRepository extends BaseRepository<Project> {
     }
 
     const now = new Date().toISOString();
+    // Capture baseVersion BEFORE incrementing — this is the version the server will diff against
+    const baseVersion = existing.version;
     const updatedEntity: Project = {
       ...existing,
       ...patch,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       updatedAt: now,
     };
 
@@ -76,7 +78,7 @@ export class ProjectRepository extends BaseRepository<Project> {
     return this.executeAtomicMutation(
       'UPDATE',
       updatedEntity,
-      existing.version,
+      baseVersion,
       patch as Record<string, unknown>
     );
   }
@@ -91,9 +93,10 @@ export class ProjectRepository extends BaseRepository<Project> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const deletedEntity: Project = {
       ...existing,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       isDeleted: true,
       deletedAt: now,
       updatedAt: now,
@@ -102,7 +105,7 @@ export class ProjectRepository extends BaseRepository<Project> {
     return this.executeAtomicMutation(
       'DELETE',
       deletedEntity,
-      existing.version,
+      baseVersion,
       { id, isDeleted: true, deletedAt: now }
     );
   }

@@ -73,7 +73,10 @@ describe('Domain Repositories CRUD Workflows', () => {
     // Verify 4 CREATE operations were queued
     const ops = await db.sync_operations.toArray();
     expect(ops).toHaveLength(4);
-    expect(ops.every((op) => op.operationType === 'CREATE' && op.baseVersion === 0)).toBe(true);
+    // CREATE operations must have baseVersion: null, never 0
+    expect(ops.every((op) => op.operationType === 'CREATE' && op.baseVersion === null)).toBe(true);
+    // Each must carry an auto-assigned localSeq
+    expect(ops.every((op) => typeof op.localSeq === 'number')).toBe(true);
   });
 
   it('increments version on UPDATE and sets baseVersion to previous version', async () => {
@@ -96,6 +99,7 @@ describe('Domain Repositories CRUD Workflows', () => {
 
     const updateOp = ops.find((o) => o.operationType === 'UPDATE');
     expect(updateOp).toBeDefined();
+    // baseVersion must equal pre-increment version (1), not the new version (2)
     expect(updateOp?.baseVersion).toBe(1);
   });
 
@@ -124,6 +128,7 @@ describe('Domain Repositories CRUD Workflows', () => {
     const ops = await db.sync_operations.where('entityId').equals(site.id).toArray();
     const deleteOp = ops.find((o) => o.operationType === 'DELETE');
     expect(deleteOp).toBeDefined();
+    // baseVersion captured before increment: was 1, new version is 2
     expect(deleteOp?.baseVersion).toBe(1);
   });
 });

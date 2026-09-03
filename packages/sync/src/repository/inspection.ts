@@ -54,7 +54,7 @@ export class InspectionRepository extends BaseRepository<Inspection> {
 
     inspectionSchema.parse(entity);
 
-    return this.executeAtomicMutation('CREATE', entity, 0, {
+    return this.executeAtomicMutation('CREATE', entity, null, {
       id: entity.id,
       siteId: entity.siteId,
       userId: entity.userId,
@@ -77,10 +77,11 @@ export class InspectionRepository extends BaseRepository<Inspection> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const updatedEntity: Inspection = {
       ...existing,
       ...patch,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       updatedAt: now,
     };
 
@@ -89,7 +90,7 @@ export class InspectionRepository extends BaseRepository<Inspection> {
     return this.executeAtomicMutation(
       'UPDATE',
       updatedEntity,
-      existing.version,
+      baseVersion,
       patch as Record<string, unknown>
     );
   }
@@ -104,9 +105,10 @@ export class InspectionRepository extends BaseRepository<Inspection> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const deletedEntity: Inspection = {
       ...existing,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       isDeleted: true,
       deletedAt: now,
       updatedAt: now,
@@ -115,7 +117,7 @@ export class InspectionRepository extends BaseRepository<Inspection> {
     return this.executeAtomicMutation(
       'DELETE',
       deletedEntity,
-      existing.version,
+      baseVersion,
       { id, isDeleted: true, deletedAt: now }
     );
   }

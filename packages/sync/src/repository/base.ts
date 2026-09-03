@@ -84,22 +84,32 @@ export abstract class BaseRepository<T extends BaseDomainEntity> {
 
   /**
    * Atomically writes the domain record and enqueues an associated SyncOperation in a single Dexie transaction.
+   *
+   * Invariant on instruction order (enforced, not just documented):
+   *  1. Assert conflict-lock for UPDATE/DELETE
+   *  2. Capture `baseVersion` from the entity's current version BEFORE any increment
+   *  3. Construct the SyncOperation with that captured baseVersion (null for CREATE)
+   *  4. Write entity with version already incremented
+   *  5. Enqueue SyncOperation
+   * Both writes are inside one Dexie 'rw' transaction — atomicity guaranteed.
    */
   protected async executeAtomicMutation(
     operationType: SyncOperationType,
     entity: T,
-    baseVersion: number,
+    baseVersion: number | null,
     mutationPayload: Record<string, unknown>
   ): Promise<T> {
     const operationId = crypto.randomUUID();
     const now = new Date().toISOString();
 
+    // Step 2: Capture baseVersion BEFORE constructing the entity write (caller is responsible
+    // for providing baseVersion = null for CREATE, pre-increment version for UPDATE/DELETE).
     const syncOp: SyncOperation = {
       operationId,
       entityType: this.entityType,
       entityId: entity.id,
       operationType,
-      baseVersion,
+      baseVersion, // null for CREATE; entity.version - 1 (captured before increment) for UPDATE/DELETE
       payload: mutationPayload,
       status: 'PENDING',
       clientId: this.context.clientId,
@@ -113,15 +123,13 @@ export abstract class BaseRepository<T extends BaseDomainEntity> {
       'rw',
       [this.table, this.db.sync_operations, this.db.conflicts],
       async () => {
-        // Enforce conflict-lock if modifying existing record
+        // Step 1: Enforce conflict-lock if modifying existing record
         if (operationType === 'UPDATE' || operationType === 'DELETE') {
           await this.assertNotConflictLocked(entity.id);
         }
 
-        // 1. Write domain row
+        // Step 4+5: Write domain row (entity already carries incremented version), then queue entry
         await this.table.put(entity);
-
-        // 2. Write queue entry
         await this.db.sync_operations.add(syncOp);
       }
     );

@@ -45,7 +45,7 @@ describe('TypeScript Type Contracts', () => {
       entityType: 'PROJECT',
       entityId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12',
       operationType: 'CREATE',
-      baseVersion: 0,
+      baseVersion: null,
       payload: { name: 'Project Borehole' },
       status: 'PENDING',
       clientId: 'client-1',

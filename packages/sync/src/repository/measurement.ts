@@ -56,7 +56,7 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
 
     measurementSchema.parse(entity);
 
-    return this.executeAtomicMutation('CREATE', entity, 0, {
+    return this.executeAtomicMutation('CREATE', entity, null, {
       id: entity.id,
       inspectionId: entity.inspectionId,
       metricType: entity.metricType,
@@ -79,10 +79,11 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const updatedEntity: Measurement = {
       ...existing,
       ...patch,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       updatedAt: now,
     };
 
@@ -91,7 +92,7 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
     return this.executeAtomicMutation(
       'UPDATE',
       updatedEntity,
-      existing.version,
+      baseVersion,
       patch as Record<string, unknown>
     );
   }
@@ -106,9 +107,10 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
     }
 
     const now = new Date().toISOString();
+    const baseVersion = existing.version;
     const deletedEntity: Measurement = {
       ...existing,
-      version: existing.version + 1,
+      version: baseVersion + 1,
       isDeleted: true,
       deletedAt: now,
       updatedAt: now,
@@ -117,7 +119,7 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
     return this.executeAtomicMutation(
       'DELETE',
       deletedEntity,
-      existing.version,
+      baseVersion,
       { id, isDeleted: true, deletedAt: now }
     );
   }

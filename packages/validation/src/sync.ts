@@ -62,22 +62,36 @@ export const syncStatusTransitionSchema = z
 /**
  * Sync operation validation schema.
  */
-export const syncOperationSchema = z.object({
-  operationId: uuidSchema,
-  entityType: entityTypeSchema,
-  entityId: uuidSchema,
-  operationType: syncOperationTypeSchema,
-  baseVersion: z.number().int().min(0),
-  payload: z.record(z.unknown()),
-  status: syncStatusSchema.default('PENDING'),
-  clientId: z.string().min(1),
-  deviceId: uuidSchema,
-  userId: uuidSchema,
-  createdAt: z.string().datetime(),
-  attemptedAt: z.string().datetime().nullable().optional(),
-  retryCount: z.number().int().min(0).default(0),
-  errorMessage: z.string().nullable().optional(),
-});
+export const syncOperationSchema = z
+  .object({
+    operationId: uuidSchema,
+    localSeq: z.number().int().positive().optional(),
+    entityType: entityTypeSchema,
+    entityId: uuidSchema,
+    operationType: syncOperationTypeSchema,
+    baseVersion: z.number().int().min(1).nullable(),
+    payload: z.record(z.unknown()),
+    status: syncStatusSchema.default('PENDING'),
+    clientId: z.string().min(1),
+    deviceId: uuidSchema,
+    userId: uuidSchema,
+    createdAt: z.string().datetime(),
+    attemptedAt: z.string().datetime().nullable().optional(),
+    retryCount: z.number().int().min(0).default(0),
+    errorMessage: z.string().nullable().optional(),
+  })
+  .refine(
+    (op) => {
+      if (op.operationType === 'CREATE') {
+        return op.baseVersion === null;
+      }
+      return typeof op.baseVersion === 'number' && op.baseVersion >= 1;
+    },
+    {
+      message:
+        'CREATE operations must have baseVersion: null; UPDATE/DELETE operations must have baseVersion >= 1',
+    }
+  );
 
 /**
  * Base schema for conflict records.

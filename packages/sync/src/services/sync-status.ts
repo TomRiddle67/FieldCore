@@ -26,14 +26,15 @@ export class SyncStatusService {
    */
   async getPendingOperations(deviceId?: string): Promise<SyncOperation[]> {
     if (deviceId) {
-      const ops = await this.db.sync_operations
+      // Order by monotonic localSeq — collision-free, unlike createdAt
+      return this.db.sync_operations
         .where('[deviceId+status]')
         .equals([deviceId, 'PENDING'])
-        .toArray();
-      return ops.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        .sortBy('localSeq');
     }
+    // No deviceId filter: fetch all PENDING and sort by localSeq in JS
     const ops = await this.db.sync_operations.where('status').equals('PENDING').toArray();
-    return ops.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return ops.sort((a, b) => (a.localSeq ?? 0) - (b.localSeq ?? 0));
   }
 
   /**

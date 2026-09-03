@@ -17,7 +17,7 @@ export class FieldCoreDexie extends Dexie {
   sites!: Table<Site, string>;
   inspections!: Table<Inspection, string>;
   measurements!: Table<Measurement, string>;
-  sync_operations!: Table<SyncOperation, string>;
+  sync_operations!: Table<SyncOperation, number>; // PK is auto-increment localSeq
   conflicts!: Table<ConflictRecord, string>;
   sync_cursors!: Table<SyncCursor, [string, string]>;
 
@@ -29,7 +29,9 @@ export class FieldCoreDexie extends Dexie {
       sites: 'id, projectId, code, version, isDeleted, createdAt, updatedAt',
       inspections: 'id, siteId, userId, deviceId, status, version, isDeleted, createdAt, updatedAt',
       measurements: 'id, inspectionId, metricType, recordedAt, version, isDeleted, createdAt, updatedAt',
-      sync_operations: 'operationId, [deviceId+status], [status+createdAt], entityId, entityType, status, createdAt',
+      // localSeq is the canonical ordering key: auto-incremented integer, collision-free.
+      // [status+localSeq] replaces [status+createdAt] — timestamps can collide; localSeq cannot.
+      sync_operations: '++localSeq, operationId, [deviceId+status], [status+localSeq], entityId, entityType, status, createdAt',
       conflicts: 'conflictId, [entityType+entityId], [entityType+entityId+status], status, conflictType, createdAt',
       sync_cursors: '[deviceId+scope], deviceId, scope, lastServerSequence, lastSyncAt, updatedAt',
     });

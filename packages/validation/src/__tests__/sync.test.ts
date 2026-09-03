@@ -16,13 +16,14 @@ describe('Sync Model & Protocol Schemas', () => {
   const now = new Date().toISOString();
 
   describe('SyncOperation Schema', () => {
-    it('validates a CREATE sync operation', () => {
+    it('validates a CREATE sync operation with baseVersion: null and optional localSeq', () => {
       const op = {
         operationId: validUUID,
+        localSeq: 1,
         entityType: 'PROJECT',
         entityId: validUUID,
         operationType: 'CREATE',
-        baseVersion: 0,
+        baseVersion: null,
         payload: {
           name: 'Project Alpha',
           code: 'ALPHA-1',
@@ -38,9 +39,28 @@ describe('Sync Model & Protocol Schemas', () => {
       expect(result.success).toBe(true);
     });
 
-    it('validates a state machine status like REQUIRES_REVALIDATION or DEVICE_REVOKED', () => {
+    it('REJECTS CREATE sync operation with baseVersion = 0 (Must be null)', () => {
       const op = {
         operationId: validUUID,
+        entityType: 'PROJECT',
+        entityId: validUUID,
+        operationType: 'CREATE',
+        baseVersion: 0,
+        payload: { name: 'Project Alpha' },
+        status: 'PENDING',
+        clientId: 'client-device-1',
+        deviceId: validUUID,
+        userId: validUUID,
+        createdAt: now,
+      };
+      const result = syncOperationSchema.safeParse(op);
+      expect(result.success).toBe(false);
+    });
+
+    it('validates an UPDATE sync operation with positive integer baseVersion', () => {
+      const op = {
+        operationId: validUUID,
+        localSeq: 2,
         entityType: 'MEASUREMENT',
         entityId: validUUID,
         operationType: 'UPDATE',
@@ -54,6 +74,24 @@ describe('Sync Model & Protocol Schemas', () => {
       };
       const result = syncOperationSchema.safeParse(op);
       expect(result.success).toBe(true);
+    });
+
+    it('REJECTS UPDATE sync operation with baseVersion = null (Must have baseVersion >= 1)', () => {
+      const op = {
+        operationId: validUUID,
+        entityType: 'MEASUREMENT',
+        entityId: validUUID,
+        operationType: 'UPDATE',
+        baseVersion: null,
+        payload: { numericValue: 42.0 },
+        status: 'PENDING',
+        clientId: 'client-device-1',
+        deviceId: validUUID,
+        userId: validUUID,
+        createdAt: now,
+      };
+      const result = syncOperationSchema.safeParse(op);
+      expect(result.success).toBe(false);
     });
   });
 
@@ -321,7 +359,7 @@ describe('Sync Model & Protocol Schemas', () => {
             entityType: 'PROJECT',
             entityId: validUUID,
             operationType: 'CREATE',
-            baseVersion: 0,
+            baseVersion: null,
             payload: { name: 'New Project', code: 'NP-1' },
             status: 'PENDING',
             clientId: 'client-1',

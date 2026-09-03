@@ -38,7 +38,8 @@ describe('Atomic Mutation & Transaction Rollback Safety', () => {
     const queueRows = await db.sync_operations.where('entityId').equals(project.id).toArray();
     expect(queueRows).toHaveLength(1);
     expect(queueRows[0].operationType).toBe('CREATE');
-    expect(queueRows[0].baseVersion).toBe(0);
+    expect(queueRows[0].baseVersion).toBeNull(); // CREATE must use null, never 0
+    expect(queueRows[0].localSeq).toBeTypeOf('number'); // auto-assigned by Dexie
     expect(queueRows[0].status).toBe('PENDING');
     expect(queueRows[0].deviceId).toBe(context.deviceId);
   });

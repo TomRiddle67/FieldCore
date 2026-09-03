@@ -103,10 +103,11 @@ export function resolveConflictOperationStatus(
  */
 export interface SyncOperation<T = Record<string, unknown>> {
   operationId: string; // Globally unique mutation UUIDv4 (idempotency key)
+  localSeq?: number; // Monotonically increasing local integer sequence (auto-incremented by Dexie)
   entityType: EntityType;
   entityId: string; // Target entity UUIDv4
   operationType: SyncOperationType;
-  baseVersion: number; // The version the client based this mutation on
+  baseVersion: number | null; // The version the client based this mutation on (null for CREATE, number for UPDATE/DELETE)
   payload: T; // Payload changes / snapshot
   status: SyncStatus;
   clientId: string;
