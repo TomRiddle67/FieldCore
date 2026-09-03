@@ -114,9 +114,10 @@ export class ProjectRepository extends BaseRepository<Project> {
    * Lists active projects.
    */
   async list(includeDeleted = false): Promise<Project[]> {
+    const records = await this.table.toArray();
     if (includeDeleted) {
-      return this.table.toArray();
+      return records;
     }
-    return this.table.where('isDeleted').equals(0).toArray();
+    return records.filter((r) => !r.isDeleted);
   }
 }
