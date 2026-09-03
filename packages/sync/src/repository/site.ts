@@ -29,59 +29,61 @@ export class SiteRepository extends BaseRepository<Site> {
    */
   async create(input: CreateSiteInput): Promise<Site> {
     const id = input.id || crypto.randomUUID();
-    const now = new Date().toISOString();
 
-    const entity: Site = {
+    return this.executeAtomicMutation(
+      'CREATE',
       id,
-      projectId: input.projectId,
-      name: input.name,
-      code: input.code,
-      gps: input.gps ?? null,
-      description: input.description ?? null,
-      version: 1,
-      isDeleted: false,
-      deletedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    siteSchema.parse(entity);
-
-    return this.executeAtomicMutation('CREATE', entity, null, {
-      id: entity.id,
-      projectId: entity.projectId,
-      name: entity.name,
-      code: entity.code,
-      gps: entity.gps,
-      description: entity.description,
-    });
+      (_current) => {
+        const now = new Date().toISOString();
+        const entity: Site = {
+          id,
+          projectId: input.projectId,
+          name: input.name,
+          code: input.code,
+          gps: input.gps ?? null,
+          description: input.description ?? null,
+          version: 1,
+          isDeleted: false,
+          deletedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        siteSchema.parse(entity);
+        return { entity, baseVersion: null };
+      },
+      (entity) => ({
+        id: entity.id,
+        projectId: entity.projectId,
+        name: entity.name,
+        code: entity.code,
+        gps: entity.gps,
+        description: entity.description,
+      })
+    );
   }
 
   /**
-   * Updates an existing site.
+   * Updates an existing site — read happens inside the transaction.
    */
   async update(id: string, patch: UpdateSiteInput): Promise<Site> {
-    const existing = await this.table.get(id);
-    if (!existing || existing.isDeleted) {
-      throw new Error(`Site with ID ${id} not found.`);
-    }
-
-    const now = new Date().toISOString();
-    const baseVersion = existing.version;
-    const updatedEntity: Site = {
-      ...existing,
-      ...patch,
-      version: baseVersion + 1,
-      updatedAt: now,
-    };
-
-    siteSchema.parse(updatedEntity);
-
     return this.executeAtomicMutation(
       'UPDATE',
-      updatedEntity,
-      baseVersion,
-      patch as Record<string, unknown>
+      id,
+      (current) => {
+        if (!current || current.isDeleted) {
+          throw new Error(`Site with ID ${id} not found.`);
+        }
+        const baseVersion = current.version;
+        const updated: Site = {
+          ...current,
+          ...patch,
+          version: baseVersion + 1,
+          updatedAt: new Date().toISOString(),
+        };
+        siteSchema.parse(updated);
+        return { entity: updated, baseVersion };
+      },
+      () => patch as Record<string, unknown>
     );
   }
 
@@ -89,26 +91,25 @@ export class SiteRepository extends BaseRepository<Site> {
    * Marks a site as deleted.
    */
   async delete(id: string): Promise<Site> {
-    const existing = await this.table.get(id);
-    if (!existing || existing.isDeleted) {
-      throw new Error(`Site with ID ${id} not found.`);
-    }
-
-    const now = new Date().toISOString();
-    const baseVersion = existing.version;
-    const deletedEntity: Site = {
-      ...existing,
-      version: baseVersion + 1,
-      isDeleted: true,
-      deletedAt: now,
-      updatedAt: now,
-    };
-
     return this.executeAtomicMutation(
       'DELETE',
-      deletedEntity,
-      baseVersion,
-      { id, isDeleted: true, deletedAt: now }
+      id,
+      (current) => {
+        if (!current || current.isDeleted) {
+          throw new Error(`Site with ID ${id} not found.`);
+        }
+        const baseVersion = current.version;
+        const now = new Date().toISOString();
+        const deleted: Site = {
+          ...current,
+          version: baseVersion + 1,
+          isDeleted: true,
+          deletedAt: now,
+          updatedAt: now,
+        };
+        return { entity: deleted, baseVersion };
+      },
+      (entity) => ({ id: entity.id, isDeleted: true, deletedAt: entity.deletedAt })
     );
   }
 

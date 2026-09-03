@@ -83,57 +83,67 @@ export abstract class BaseRepository<T extends BaseDomainEntity> {
   }
 
   /**
-   * Atomically writes the domain record and enqueues an associated SyncOperation in a single Dexie transaction.
+   * Atomically reads current state, applies the mutator, and enqueues the
+   * SyncOperation — all inside one Dexie transaction. The mutator receives
+   * the current row (or null for CREATE) and must return the new row plus
+   * the baseVersion to record.
    *
-   * Invariant on instruction order (enforced, not just documented):
-   *  1. Assert conflict-lock for UPDATE/DELETE
-   *  2. Capture `baseVersion` from the entity's current version BEFORE any increment
-   *  3. Construct the SyncOperation with that captured baseVersion (null for CREATE)
-   *  4. Write entity with version already incremented
-   *  5. Enqueue SyncOperation
-   * Both writes are inside one Dexie 'rw' transaction — atomicity guaranteed.
+   * This is the ONLY entry point repositories should use for CREATE/UPDATE/DELETE.
+   * No repository should read this.table or compute a version outside this method.
+   *
+   * Why: Dexie serializes 'rw' transactions on the same table, so a second
+   * call to update() that starts before this one commits will block and see
+   * this write's result, not the stale pre-write state. Moving the read
+   * inside the transaction closes the lost-update window that existed when
+   * callers did `const existing = await this.table.get(id)` before calling
+   * this method.
    */
   protected async executeAtomicMutation(
     operationType: SyncOperationType,
-    entity: T,
-    baseVersion: number | null,
-    mutationPayload: Record<string, unknown>
+    entityId: string,
+    mutate: (current: T | null) => { entity: T; baseVersion: number | null },
+    buildPayload: (entity: T) => Record<string, unknown>
   ): Promise<T> {
     const operationId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    // Step 2: Capture baseVersion BEFORE constructing the entity write (caller is responsible
-    // for providing baseVersion = null for CREATE, pre-increment version for UPDATE/DELETE).
-    const syncOp: SyncOperation = {
-      operationId,
-      entityType: this.entityType,
-      entityId: entity.id,
-      operationType,
-      baseVersion, // null for CREATE; entity.version - 1 (captured before increment) for UPDATE/DELETE
-      payload: mutationPayload,
-      status: 'PENDING',
-      clientId: this.context.clientId,
-      deviceId: this.context.deviceId,
-      userId: this.context.userId,
-      createdAt: now,
-      retryCount: 0,
-    };
-
-    await this.db.transaction(
+    return this.db.transaction(
       'rw',
       [this.table, this.db.sync_operations, this.db.conflicts],
       async () => {
-        // Step 1: Enforce conflict-lock if modifying existing record
+        // 1. Enforce conflict-lock if modifying existing record
         if (operationType === 'UPDATE' || operationType === 'DELETE') {
-          await this.assertNotConflictLocked(entity.id);
+          await this.assertNotConflictLocked(entityId);
         }
 
-        // Step 4+5: Write domain row (entity already carries incremented version), then queue entry
+        // 2. Read happens INSIDE the transaction — serialized against concurrent writes
+        const current = (await this.table.get(entityId)) ?? null;
+
+        // 3. Mutator captures baseVersion from current state and builds new entity
+        const { entity, baseVersion } = mutate(current);
+
+        // 4. Build sync operation with captured baseVersion
+        const syncOp: SyncOperation = {
+          operationId,
+          entityType: this.entityType,
+          entityId: entity.id,
+          operationType,
+          baseVersion,
+          payload: buildPayload(entity),
+          status: 'PENDING',
+          clientId: this.context.clientId,
+          deviceId: this.context.deviceId,
+          userId: this.context.userId,
+          createdAt: now,
+          retryCount: 0,
+        };
+
+        // 5. Write domain row, then enqueue operation (localSeq auto-assigned by Dexie)
         await this.table.put(entity);
         await this.db.sync_operations.add(syncOp);
+
+        return entity;
       }
     );
-
-    return entity;
   }
 }

@@ -33,65 +33,67 @@ export class InspectionRepository extends BaseRepository<Inspection> {
    */
   async create(input: CreateInspectionInput): Promise<Inspection> {
     const id = input.id || crypto.randomUUID();
-    const now = new Date().toISOString();
 
-    const entity: Inspection = {
+    return this.executeAtomicMutation(
+      'CREATE',
       id,
-      siteId: input.siteId,
-      userId: input.userId || this.context.userId,
-      deviceId: input.deviceId || this.context.deviceId,
-      title: input.title,
-      status: input.status ?? 'DRAFT',
-      scheduledDate: input.scheduledDate ?? null,
-      completedDate: input.completedDate ?? null,
-      notes: input.notes ?? null,
-      version: 1,
-      isDeleted: false,
-      deletedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    inspectionSchema.parse(entity);
-
-    return this.executeAtomicMutation('CREATE', entity, null, {
-      id: entity.id,
-      siteId: entity.siteId,
-      userId: entity.userId,
-      deviceId: entity.deviceId,
-      title: entity.title,
-      status: entity.status,
-      scheduledDate: entity.scheduledDate,
-      completedDate: entity.completedDate,
-      notes: entity.notes,
-    });
+      (_current) => {
+        const now = new Date().toISOString();
+        const entity: Inspection = {
+          id,
+          siteId: input.siteId,
+          userId: input.userId || this.context.userId,
+          deviceId: input.deviceId || this.context.deviceId,
+          title: input.title,
+          status: input.status ?? 'DRAFT',
+          scheduledDate: input.scheduledDate ?? null,
+          completedDate: input.completedDate ?? null,
+          notes: input.notes ?? null,
+          version: 1,
+          isDeleted: false,
+          deletedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        inspectionSchema.parse(entity);
+        return { entity, baseVersion: null };
+      },
+      (entity) => ({
+        id: entity.id,
+        siteId: entity.siteId,
+        userId: entity.userId,
+        deviceId: entity.deviceId,
+        title: entity.title,
+        status: entity.status,
+        scheduledDate: entity.scheduledDate,
+        completedDate: entity.completedDate,
+        notes: entity.notes,
+      })
+    );
   }
 
   /**
-   * Updates an existing inspection.
+   * Updates an existing inspection — read happens inside the transaction.
    */
   async update(id: string, patch: UpdateInspectionInput): Promise<Inspection> {
-    const existing = await this.table.get(id);
-    if (!existing || existing.isDeleted) {
-      throw new Error(`Inspection with ID ${id} not found.`);
-    }
-
-    const now = new Date().toISOString();
-    const baseVersion = existing.version;
-    const updatedEntity: Inspection = {
-      ...existing,
-      ...patch,
-      version: baseVersion + 1,
-      updatedAt: now,
-    };
-
-    inspectionSchema.parse(updatedEntity);
-
     return this.executeAtomicMutation(
       'UPDATE',
-      updatedEntity,
-      baseVersion,
-      patch as Record<string, unknown>
+      id,
+      (current) => {
+        if (!current || current.isDeleted) {
+          throw new Error(`Inspection with ID ${id} not found.`);
+        }
+        const baseVersion = current.version;
+        const updated: Inspection = {
+          ...current,
+          ...patch,
+          version: baseVersion + 1,
+          updatedAt: new Date().toISOString(),
+        };
+        inspectionSchema.parse(updated);
+        return { entity: updated, baseVersion };
+      },
+      () => patch as Record<string, unknown>
     );
   }
 
@@ -99,26 +101,25 @@ export class InspectionRepository extends BaseRepository<Inspection> {
    * Marks an inspection as deleted.
    */
   async delete(id: string): Promise<Inspection> {
-    const existing = await this.table.get(id);
-    if (!existing || existing.isDeleted) {
-      throw new Error(`Inspection with ID ${id} not found.`);
-    }
-
-    const now = new Date().toISOString();
-    const baseVersion = existing.version;
-    const deletedEntity: Inspection = {
-      ...existing,
-      version: baseVersion + 1,
-      isDeleted: true,
-      deletedAt: now,
-      updatedAt: now,
-    };
-
     return this.executeAtomicMutation(
       'DELETE',
-      deletedEntity,
-      baseVersion,
-      { id, isDeleted: true, deletedAt: now }
+      id,
+      (current) => {
+        if (!current || current.isDeleted) {
+          throw new Error(`Inspection with ID ${id} not found.`);
+        }
+        const baseVersion = current.version;
+        const now = new Date().toISOString();
+        const deleted: Inspection = {
+          ...current,
+          version: baseVersion + 1,
+          isDeleted: true,
+          deletedAt: now,
+          updatedAt: now,
+        };
+        return { entity: deleted, baseVersion };
+      },
+      (entity) => ({ id: entity.id, isDeleted: true, deletedAt: entity.deletedAt })
     );
   }
 
