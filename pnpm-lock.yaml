@@ -67,9 +67,15 @@ importers:
         specifier: ^3.4.5
         version: 3.4.9
     devDependencies:
+      '@fieldcore/sync':
+        specifier: workspace:*
+        version: link:../sync
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1
+      fake-indexeddb:
+        specifier: ^6.0.0
+        version: 6.2.5
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
