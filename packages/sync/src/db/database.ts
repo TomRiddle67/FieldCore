@@ -31,7 +31,7 @@ export class FieldCoreDexie extends Dexie {
       measurements: 'id, inspectionId, metricType, recordedAt, version, isDeleted, createdAt, updatedAt',
       // localSeq is the canonical ordering key: auto-incremented integer, collision-free.
       // [status+localSeq] replaces [status+createdAt] — timestamps can collide; localSeq cannot.
-      sync_operations: '++localSeq, operationId, [deviceId+status], [status+localSeq], entityId, entityType, status, createdAt',
+      sync_operations: '++localSeq, operationId, [deviceId+status], [status+localSeq], [status+nextEligibleRetryAt], entityId, entityType, status, nextEligibleRetryAt, createdAt',
       conflicts: 'conflictId, [entityType+entityId], [entityType+entityId+status], status, conflictType, createdAt',
       sync_cursors: '[deviceId+scope], deviceId, scope, lastServerSequence, lastSyncAt, updatedAt',
     });
