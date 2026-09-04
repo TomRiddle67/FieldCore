@@ -53,6 +53,7 @@ export class PushSyncService {
       for (const op of dangling) {
         await this.db.sync_operations.where('operationId').equals(op.operationId).modify({
           status: 'PENDING',
+          nextEligibleRetryAt: null,
           errorMessage: 'Recovered from interrupted sync session',
         });
       }
