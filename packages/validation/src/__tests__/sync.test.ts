@@ -4,6 +4,8 @@ import {
   conflictRecordSchema,
   pullRequestSchema,
   pushRequestSchema,
+  pushResponseSchema,
+  pushOperationResultSchema,
   syncStatusTransitionSchema,
 } from '../sync.js';
 import {
@@ -380,6 +382,102 @@ describe('Sync Model & Protocol Schemas', () => {
         limit: 50,
       };
       const result = pullRequestSchema.safeParse(pullReq);
+      expect(result.success).toBe(true);
+    });
+
+    it('validates syncOperation with valid nextEligibleRetryAt datetime or null', () => {
+      const opWithRetry = {
+        operationId: validUUID,
+        entityType: 'PROJECT',
+        entityId: validUUID,
+        operationType: 'CREATE',
+        baseVersion: null,
+        payload: { name: 'Retry Project' },
+        status: 'PENDING',
+        clientId: 'client-1',
+        deviceId: validUUID,
+        userId: validUUID,
+        createdAt: now,
+        retryCount: 2,
+        nextEligibleRetryAt: '2026-09-04T14:30:00.000Z',
+      };
+      expect(syncOperationSchema.safeParse(opWithRetry).success).toBe(true);
+
+      const opWithNullRetry = { ...opWithRetry, nextEligibleRetryAt: null };
+      expect(syncOperationSchema.safeParse(opWithNullRetry).success).toBe(true);
+
+      const opWithInvalidRetry = { ...opWithRetry, nextEligibleRetryAt: 'not-a-datetime' };
+      expect(syncOperationSchema.safeParse(opWithInvalidRetry).success).toBe(false);
+    });
+
+    it('enforces maximum 25 operations in pushRequestSchema', () => {
+      const createOp = (i: number) => ({
+        operationId: validUUID,
+        entityType: 'PROJECT' as const,
+        entityId: validUUID,
+        operationType: 'CREATE' as const,
+        baseVersion: null,
+        payload: { name: `Project ${i}` },
+        status: 'PENDING' as const,
+        clientId: 'client-1',
+        deviceId: validUUID,
+        userId: validUUID,
+        createdAt: now,
+      });
+
+      const validBatch = {
+        deviceId: validUUID,
+        operations: Array.from({ length: 25 }, (_, i) => createOp(i)),
+      };
+      expect(pushRequestSchema.safeParse(validBatch).success).toBe(true);
+
+      const oversizedBatch = {
+        deviceId: validUUID,
+        operations: Array.from({ length: 26 }, (_, i) => createOp(i)),
+      };
+      expect(pushRequestSchema.safeParse(oversizedBatch).success).toBe(false);
+    });
+
+    it('validates pushResponseSchema with per-operation results and conflicts', () => {
+      const pushResp = {
+        results: [
+          {
+            operationId: validUUID,
+            entityId: validUUID,
+            entityType: 'PROJECT',
+            status: 'APPLIED',
+            version: 2,
+            sequence: 42,
+          },
+          {
+            operationId: validUUID,
+            entityId: validUUID,
+            entityType: 'SITE',
+            status: 'CONFLICT',
+            conflict: {
+              conflictId: validUUID,
+              entityType: 'SITE',
+              entityId: validUUID,
+              operationId: validUUID,
+              conflictType: 'EDIT_EDIT',
+              serverVersion: 3,
+              clientVersion: 2,
+              serverState: { name: 'Server Site' },
+              clientState: { name: 'Client Site' },
+              status: 'PENDING',
+              createdAt: now,
+            },
+          },
+          {
+            operationId: validUUID,
+            entityId: validUUID,
+            entityType: 'INSPECTION',
+            status: 'DEVICE_REVOKED',
+            error: 'Device is revoked',
+          },
+        ],
+      };
+      const result = pushResponseSchema.safeParse(pushResp);
       expect(result.success).toBe(true);
     });
   });
