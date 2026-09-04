@@ -116,6 +116,7 @@ export interface SyncOperation<T = Record<string, unknown>> {
   createdAt: string;
   attemptedAt?: string | null;
   retryCount: number;
+  nextEligibleRetryAt?: string | null;
   errorMessage?: string | null;
 }
 
