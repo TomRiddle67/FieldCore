@@ -78,6 +78,7 @@ export const syncOperationSchema = z
     createdAt: z.string().datetime(),
     attemptedAt: z.string().datetime().nullable().optional(),
     retryCount: z.number().int().min(0).default(0),
+    nextEligibleRetryAt: z.string().datetime().nullable().optional(),
     errorMessage: z.string().nullable().optional(),
   })
   .refine(
@@ -189,10 +190,43 @@ export const syncAttemptSchema = z.object({
 
 /**
  * Push request payload schema.
+ * Enforces batched push up to 25 operations in transport.
  */
 export const pushRequestSchema = z.object({
   deviceId: uuidSchema,
-  operations: z.array(syncOperationSchema).min(1),
+  operations: z.array(syncOperationSchema).min(1).max(25),
+});
+
+/**
+ * Push operation outcome status schema.
+ */
+export const pushOperationStatusSchema = z.enum([
+  'APPLIED',
+  'CONFLICT',
+  'REJECTED',
+  'REQUIRES_REVALIDATION',
+  'DEVICE_REVOKED',
+]);
+
+/**
+ * Single push operation result schema.
+ */
+export const pushOperationResultSchema = z.object({
+  operationId: uuidSchema,
+  entityId: uuidSchema,
+  entityType: entityTypeSchema,
+  status: pushOperationStatusSchema,
+  version: z.number().int().min(1).optional(),
+  sequence: z.union([z.number().int().min(0), z.string()]).optional(),
+  conflict: conflictRecordSchema.optional(),
+  error: z.string().optional(),
+});
+
+/**
+ * Push response payload schema.
+ */
+export const pushResponseSchema = z.object({
+  results: z.array(pushOperationResultSchema),
 });
 
 /**
