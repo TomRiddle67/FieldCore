@@ -224,7 +224,12 @@ describe('PushSyncService (Client Sync Engine)', () => {
     expect(backedOffOp.nextEligibleRetryAt).toBeDefined();
 
     const retryAt = new Date(backedOffOp.nextEligibleRetryAt!).getTime();
+    // Lower bound: must be strictly in the future relative to injected clock
     expect(retryAt).toBeGreaterThan(nowTime);
+    // Upper bound: retryCount=1 → baseDelay=min(30000, 2^1*1000)=2000ms, jitter≤999ms
+    // So retryAt must fall in [nowTime+2000, nowTime+3000]. Catches formula bugs (e.g. off-by-1000x)
+    // without being an exact match that would be flaky under jitter.
+    expect(retryAt).toBeLessThanOrEqual(nowTime + 2000 + 999);
 
     // Second immediate push: operation should be filtered out by backoff
     const res2 = await pushService.pushBatch(failingTransport, { now: nowFn });
@@ -310,5 +315,96 @@ describe('PushSyncService (Client Sync Engine)', () => {
     expect(op1State.status).toBe('SYNCED'); // Acknowledged!
     expect(op2State.status).toBe('CONFLICT'); // Conflict recorded!
     expect(op3State.status).toBe('PENDING'); // Unacknowledged -> reset to PENDING for retry!
+  });
+
+  it('localSeq ordering preserved: operations held in REQUIRES_REVALIDATION push before newly-enqueued ones after revalidation', async () => {
+    // 1. Create first project offline — gets localSeq:1
+    await projectRepo.create({ name: 'Pre-Revalidation Op', code: 'PRE-1' });
+
+    const [op1Before] = await db.sync_operations.toArray();
+    expect(op1Before.localSeq).toBe(1);
+
+    // 2. Push — server returns REQUIRES_REVALIDATION, op1 is held
+    const revalidationTransport: PushTransport = async (req) => ({
+      results: req.operations.map((op) => ({
+        operationId: op.operationId,
+        entityId: op.entityId,
+        entityType: op.entityType,
+        status: 'REQUIRES_REVALIDATION' as const,
+        error: 'Offline window expired.',
+      })),
+    });
+    await pushService.pushBatch(revalidationTransport);
+
+    const [heldOp] = await db.sync_operations.toArray();
+    expect(heldOp.status).toBe('REQUIRES_REVALIDATION');
+
+    // 3. While op1 is held, client creates a second project — gets localSeq:2
+    await projectRepo.create({ name: 'Post-Revalidation Op', code: 'POST-2' });
+
+    const allOps = (await db.sync_operations.toArray()).sort(
+      (a, b) => (a.localSeq ?? 0) - (b.localSeq ?? 0)
+    );
+    expect(allOps).toHaveLength(2);
+    expect(allOps[0].localSeq).toBe(1); // op1 — held
+    expect(allOps[1].localSeq).toBe(2); // op2 — pending
+    expect(allOps[0].status).toBe('REQUIRES_REVALIDATION');
+    expect(allOps[1].status).toBe('PENDING');
+
+    // 4. Next pushBatch: ONLY op2 (PENDING) should be sent.
+    //    op1 is REQUIRES_REVALIDATION and filtered out of the eligible queue.
+    let capturedOps: typeof allOps = [];
+    const trackingTransport: PushTransport = async (req) => {
+      capturedOps = req.operations as typeof allOps;
+      return {
+        results: req.operations.map((op) => ({
+          operationId: op.operationId,
+          entityId: op.entityId,
+          entityType: op.entityType,
+          status: 'REQUIRES_REVALIDATION' as const,
+          error: 'Offline window expired.',
+        })),
+      };
+    };
+    await pushService.pushBatch(trackingTransport);
+
+    // Transport was called with only op2 — the held op1 was NOT re-sent
+    expect(capturedOps).toHaveLength(1);
+    expect(capturedOps[0].localSeq).toBe(2);
+
+    // 5. Device comes back online and revalidates — both ops reset to PENDING
+    const unblockedCount = await pushService.resolveRevalidationSuccess(testDeviceId);
+    expect(unblockedCount).toBe(2); // both op1 and op2 are now REQUIRES_REVALIDATION
+
+    const afterRevalidation = (await db.sync_operations.toArray()).sort(
+      (a, b) => (a.localSeq ?? 0) - (b.localSeq ?? 0)
+    );
+    expect(afterRevalidation[0].status).toBe('PENDING');
+    expect(afterRevalidation[1].status).toBe('PENDING');
+
+    // 6. THE KEY INVARIANT: next pushBatch must send op1 (localSeq:1) BEFORE op2 (localSeq:2).
+    //    op1 was created first and carries baseVersion:null for a CREATE; op2 may depend on
+    //    server state that op1 establishes. If ordering flipped, op2 would push first and
+    //    potentially operate on stale server state.
+    let orderedOps: typeof allOps = [];
+    const orderVerifyTransport: PushTransport = async (req) => {
+      orderedOps = req.operations as typeof allOps;
+      return {
+        results: req.operations.map((op) => ({
+          operationId: op.operationId,
+          entityId: op.entityId,
+          entityType: op.entityType,
+          status: 'APPLIED' as const,
+          version: 1,
+          sequence: op.localSeq ?? 0,
+        })),
+      };
+    };
+    await pushService.pushBatch(orderVerifyTransport, { batchSize: 25 });
+
+    expect(orderedOps).toHaveLength(2);
+    // Strictly ascending localSeq: op1 before op2
+    expect(orderedOps[0].localSeq).toBe(1);
+    expect(orderedOps[1].localSeq).toBe(2);
   });
 });

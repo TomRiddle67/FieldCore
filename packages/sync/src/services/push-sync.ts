@@ -95,6 +95,7 @@ export class PushSyncService {
   ): Promise<PushBatchResult> {
     const { batchSize = 25, deviceId, now = () => new Date().toISOString() } = options;
     const currentIso = now();
+    const currentMs = new Date(currentIso).getTime();
 
     // 1. Fetch eligible operations
     const batch = await this.getEligiblePendingOperations(batchSize, deviceId, currentIso);
@@ -142,14 +143,15 @@ export class PushSyncService {
               status: 'PENDING',
               retryCount: nextRetry,
               errorMessage: `Push failed after ${nextRetry} attempts. Manual attention required: ${transportError?.message ?? 'Network error'}`,
-              nextEligibleRetryAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              // Use injected clock so tests don't touch real wall time
+              nextEligibleRetryAt: new Date(currentMs + 24 * 60 * 60 * 1000).toISOString(),
             });
           } else {
-            // Exponential backoff with jitter capped at 30s
+            // Exponential backoff with jitter capped at 30s — computed from injected clock
             const baseDelay = Math.min(30000, Math.pow(2, nextRetry) * 1000);
             const jitter = Math.floor(Math.random() * 1000);
             const delay = Math.min(30000, baseDelay + jitter);
-            const nextRetryAt = new Date(Date.now() + delay).toISOString();
+            const nextRetryAt = new Date(currentMs + delay).toISOString();
 
             await this.db.sync_operations.where('operationId').equals(op.operationId).modify({
               status: 'PENDING',

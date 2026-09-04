@@ -24,6 +24,21 @@ import type {
 export interface ProcessPushOptions {
   db: Database;
   request: PushRequest;
+  /**
+   * Optional instrumentation callback fired when the idempotency_records PRIMARY KEY
+   * constraint violation (Postgres error 23505) is caught during a concurrent duplicate
+   * delivery race. Undefined in production; injected in tests to prove the catch branch
+   * was actually executed, not just inferred from outcome invariants.
+   */
+  onIdempotencyConstraintRace?: () => void;
+  /**
+   * Test-only: bypass the fast-path idempotency SELECT for these operation IDs.
+   * Without this, Node.js single-threaded Promise.all serializes the fast-path SELECT
+   * such that the second request is deduplicated before entering the transaction —
+   * making the 23505 constraint path unreachable in single-process tests.
+   * In production this is always undefined.
+   */
+  skipFastPathForOperationIds?: Set<string>;
 }
 
 /**
@@ -51,6 +66,8 @@ function getDomainTable(entityType: EntityType) {
 export async function processPushRequest({
   db,
   request,
+  onIdempotencyConstraintRace,
+  skipFastPathForOperationIds,
 }: ProcessPushOptions): Promise<PushResponse> {
   // 1. Device authentication & revalidation pre-check:
   // Checked once before per-operation loop gates the entire batch.
@@ -89,15 +106,19 @@ export async function processPushRequest({
 
   // 2. Per-operation evaluation: Each operation runs independently.
   for (const op of request.operations) {
-    // Fast-path: query idempotency_records to avoid opening transactions for committed retries
-    const [cached] = await db
-      .select()
-      .from(idempotencyRecords)
-      .where(eq(idempotencyRecords.operationId, op.operationId));
+    // Fast-path: query idempotency_records to avoid opening transactions for committed retries.
+    // Bypassed for nominated IDs in tests to force the transaction-level 23505 race path.
+    const skipFastPath = skipFastPathForOperationIds?.has(op.operationId) ?? false;
+    if (!skipFastPath) {
+      const [cached] = await db
+        .select()
+        .from(idempotencyRecords)
+        .where(eq(idempotencyRecords.operationId, op.operationId));
 
-    if (cached) {
-      results.push(cached.responsePayload as unknown as PushOperationResult);
-      continue;
+      if (cached) {
+        results.push(cached.responsePayload as unknown as PushOperationResult);
+        continue;
+      }
     }
 
     try {
@@ -437,6 +458,10 @@ export async function processPushRequest({
         String(err?.detail).includes('already exists');
 
       if (isUniqueViolation) {
+        // Signal to test instrumentation that this exact branch fired (not just that
+        // the outcome looks correct). In production this callback is undefined.
+        onIdempotencyConstraintRace?.();
+
         const [committed] = await db
           .select()
           .from(idempotencyRecords)

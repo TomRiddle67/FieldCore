@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import {
@@ -12,6 +12,7 @@ import {
   conflicts,
 } from '@fieldcore/database';
 import { createServer } from '../server.js';
+import { processPushRequest } from '../push-handler.js';
 import type { PushRequest, SyncOperation } from '@fieldcore/types';
 
 describe('Server Push Synchronization Engine', () => {
@@ -555,47 +556,65 @@ describe('Server Push Synchronization Engine', () => {
     const projectId = randomUUID();
     const operationId = randomUUID();
 
-    const pushReq: PushRequest = {
+    const operation = {
+      operationId,
+      entityType: 'PROJECT' as const,
+      entityId: projectId,
+      operationType: 'CREATE' as const,
+      baseVersion: null,
+      payload: {
+        name: 'Concurrent Race Project',
+        code: `RACE-${randomUUID().slice(0, 8)}`,
+        status: 'ACTIVE',
+      },
+      status: 'PENDING' as const,
+      clientId: 'client-1',
       deviceId: testDeviceId,
-      operations: [
-        {
-          operationId,
-          entityType: 'PROJECT',
-          entityId: projectId,
-          operationType: 'CREATE',
-          baseVersion: null,
-          payload: {
-            name: 'Concurrent Race Project',
-            code: `RACE-${randomUUID().slice(0, 8)}`,
-            status: 'ACTIVE',
-          },
-          status: 'PENDING',
-          clientId: 'client-1',
-          deviceId: testDeviceId,
-          userId: testUserId,
-          createdAt: new Date().toISOString(),
-          retryCount: 0,
-        },
-      ],
+      userId: testUserId,
+      createdAt: new Date().toISOString(),
+      retryCount: 0,
     };
 
-    // Fire two identical requests concurrently
+    // Spy to prove the 23505 catch branch fired, not just that the outcome looks correct.
+    // The spy is incremented inside the uniqueness-violation catch block — the only way
+    // it can reach 1 is if both requests passed the pre-transaction fast-path SELECT
+    // simultaneously, one committed, and the other hit the PRIMARY KEY constraint.
+    const constraintRaceSpy = vi.fn();
+
+    // In a single-process test, Node.js's event loop would serialize the fast-path SELECT
+    // so the second request is deduplicated before entering a transaction — making the 23505
+    // path unreachable. skipFastPathForOperationIds bypasses it for this operationId,
+    // forcing both concurrent calls into the transaction path where the PRIMARY KEY constraint
+    // is the actual enforcer. In production this bypass is always undefined.
+    const skipFastPath = new Set([operationId]);
+
+    // Call processPushRequest directly (bypassing Fastify inject) so we can inject the spy.
+    // Both requests carry the same operationId — a legitimate crash-retry race.
     const [res1, res2] = await Promise.all([
-      app.inject({ method: 'POST', url: '/sync/push', payload: pushReq }),
-      app.inject({ method: 'POST', url: '/sync/push', payload: pushReq }),
+      processPushRequest({
+        db,
+        request: { deviceId: testDeviceId, operations: [operation] },
+        onIdempotencyConstraintRace: constraintRaceSpy,
+        skipFastPathForOperationIds: skipFastPath,
+      }),
+      processPushRequest({
+        db,
+        request: { deviceId: testDeviceId, operations: [operation] },
+        onIdempotencyConstraintRace: constraintRaceSpy,
+        skipFastPathForOperationIds: skipFastPath,
+      }),
     ]);
 
-    expect(res1.statusCode).toBe(200);
-    expect(res2.statusCode).toBe(200);
+    // Both responses report APPLIED with identical version and sequence
+    expect(res1.results[0].status).toBe('APPLIED');
+    expect(res2.results[0].status).toBe('APPLIED');
+    expect(res1.results[0].sequence).toBe(res2.results[0].sequence);
+    expect(res1.results[0].version).toBe(res2.results[0].version);
 
-    const body1 = res1.json();
-    const body2 = res2.json();
-
-    // Both should report APPLIED with the exact same sequence and version
-    expect(body1.results[0].status).toBe('APPLIED');
-    expect(body2.results[0].status).toBe('APPLIED');
-    expect(body1.results[0].sequence).toBe(body2.results[0].sequence);
-    expect(body1.results[0].version).toBe(body2.results[0].version);
+    // MECHANISM PROVEN: the constraint catch branch fired exactly once —
+    // confirming that one request lost the DB race and was recovered via 23505,
+    // not that both happened to serialize by chance through some other code path.
+    expect(constraintRaceSpy).toHaveBeenCalledTimes(1);
 
     // Assert change_log has exactly 1 entry for this operationId
     const changes = await db
