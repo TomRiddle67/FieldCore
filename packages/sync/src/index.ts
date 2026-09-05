@@ -7,3 +7,4 @@ export * from './repository/measurement.js';
 export * from './services/sync-status.js';
 export * from './services/push-sync.js';
 export * from './services/pull-sync.js';
+export * from './services/conflict-resolution.js';
