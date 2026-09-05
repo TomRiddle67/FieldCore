@@ -364,4 +364,121 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
     expect(storedConflict?.serverVersion).toBe(2);
     expect(storedConflict?.clientVersion).toBe(1);
   });
+
+  it('4. Own-operation round-trip: pushes CREATE, pulls back own change feed; record lands at version 1 with zero duplicates', async () => {
+    const startSeq = await getLatestServerSequence();
+
+    // 1. Client creates project offline
+    const project = await projectRepo.create({
+      name: 'Own Roundtrip Project',
+      code: `OWN-${randomUUID().slice(0, 6)}`,
+    });
+    expect(project.version).toBe(1);
+
+    const pushTransport = createFastifyPushTransport();
+    const pullTransport = createFastifyPullTransport();
+
+    // 2. Client pushes CREATE to server
+    const pushResult = await pushService.pushBatch(pushTransport);
+    expect(pushResult.appliedCount).toBe(1);
+
+    // Verify changeLog in Postgres contains this change
+    const [serverChange] = await db
+      .select()
+      .from(changeLog)
+      .where(eq(changeLog.entityId, project.id));
+    expect(serverChange).toBeDefined();
+    expect(serverChange.changedByDeviceId).toBe(testDeviceId); // Own device
+
+    // 3. Set client pull cursor to startSeq so pull includes this newly pushed change
+    await dexieDb.pull_cursors.put({
+      scope: 'default',
+      lastServerSequence: startSeq,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // 4. Pull feed delivers own mutation back to the device
+    const pullResult = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
+
+    // Version-compare check: local is version 1, incoming is version 1 -> 1 >= 1 -> skipped
+    expect(pullResult.changesApplied).toBe(0);
+    expect(BigInt(pullResult.latestSequence)).toBeGreaterThanOrEqual(BigInt(serverChange.sequence));
+
+    // Verify Dexie record is at version 1 with zero duplicate rows
+    const allMatching = (await dexieDb.projects.toArray()).filter((p) => p.id === project.id);
+    expect(allMatching).toHaveLength(1);
+    expect(allMatching[0].version).toBe(1);
+    expect(allMatching[0].name).toBe('Own Roundtrip Project');
+  });
+
+  it('5. Tombstone idempotency under cursor-gap re-delivery: delivers same tombstone twice; record remains isDeleted: true at version 2 with zero duplicate deletions', async () => {
+    const startSeq = await getLatestServerSequence();
+    const projectId = randomUUID();
+    const peerNow = new Date().toISOString();
+
+    // 1. Peer creates and soft-deletes a project on the server
+    await db.insert(projects).values({
+      id: projectId,
+      name: 'To Be Deleted Project',
+      code: `DEL-${randomUUID().slice(0, 6)}`,
+      status: 'ACTIVE',
+      version: 2,
+      isDeleted: true,
+      deletedAt: peerNow,
+      createdAt: peerNow,
+      updatedAt: peerNow,
+    });
+
+    await db
+      .insert(changeLog)
+      .values({
+        entityType: 'PROJECT',
+        entityId: projectId,
+        version: 2,
+        operationType: 'DELETE',
+        payload: { id: projectId, isDeleted: true, deletedAt: peerNow },
+        isTombstone: true,
+        changedByUserId: peerUserId,
+        changedByDeviceId: peerDeviceId,
+        operationId: randomUUID(),
+        createdAt: peerNow,
+      });
+
+    // 2. Client starts cursor before the tombstone
+    await dexieDb.pull_cursors.put({
+      scope: 'default',
+      lastServerSequence: startSeq,
+      updatedAt: peerNow,
+    });
+
+    const pullTransport = createFastifyPullTransport();
+
+    // 3. First pull: applies tombstone
+    const res1 = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
+    expect(res1.changesApplied).toBeGreaterThanOrEqual(1);
+
+    const recordAfter1 = await dexieDb.projects.get(projectId);
+    expect(recordAfter1).toBeDefined();
+    expect(recordAfter1?.isDeleted).toBe(true);
+    expect(recordAfter1?.version).toBe(2);
+
+    // 4. Simulate cursor gap / retry by rewinding cursor back to startSeq
+    await dexieDb.pull_cursors.put({
+      scope: 'default',
+      lastServerSequence: startSeq,
+      updatedAt: peerNow,
+    });
+
+    // 5. Second pull: re-delivers the exact same tombstone
+    const res2 = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
+
+    // Version-compare check: record is already deleted at version 2 >= 2 -> skipped
+    expect(res2.changesApplied).toBe(0);
+
+    // Confirm state remains isDeleted: true, version 2, zero duplicate rows
+    const allMatching = (await dexieDb.projects.toArray()).filter((p) => p.id === projectId);
+    expect(allMatching).toHaveLength(1);
+    expect(allMatching[0].isDeleted).toBe(true);
+    expect(allMatching[0].version).toBe(2);
+  });
 });
