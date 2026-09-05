@@ -32,11 +32,17 @@ export interface ProcessPushOptions {
    */
   onIdempotencyConstraintRace?: () => void;
   /**
-   * Test-only: bypass the fast-path idempotency SELECT for these operation IDs.
-   * Without this, Node.js single-threaded Promise.all serializes the fast-path SELECT
-   * such that the second request is deduplicated before entering the transaction —
-   * making the 23505 constraint path unreachable in single-process tests.
-   * In production this is always undefined.
+   * TEST-ONLY. Must never be wired to anything reachable from the Fastify route handler
+   * (request body, headers, config flags, or any runtime-injected value). Exposing it to
+   * real traffic would disable the fast-path deduplication for those operation IDs, causing
+   * the exact 23505 constraint race this test suite exists to close to become exploitable
+   * rather than merely simulatable.
+   *
+   * Bypasses the fast-path idempotency SELECT for nominated operation IDs so that both
+   * sides of a Promise.all() pair enter the transaction path, where the PRIMARY KEY
+   * constraint is the actual enforcer. Without this bypass, Node.js's single-threaded
+   * event loop serializes the SELECT such that the second request is deduplicated before
+   * either request opens a transaction — making the 23505 branch unreachable in-process.
    */
   skipFastPathForOperationIds?: Set<string>;
 }
