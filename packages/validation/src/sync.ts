@@ -238,5 +238,5 @@ export const pullRequestSchema = z.object({
     z.number().int().min(0),
     z.string().regex(/^\d+$/, 'afterSequence must be a non-negative integer string'),
   ]),
-  limit: z.number().int().min(1).max(500).default(100),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
 });

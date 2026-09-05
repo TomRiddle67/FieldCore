@@ -223,6 +223,16 @@ export interface SyncCursor {
 }
 
 /**
+ * Client-side pull cursor checkpoint in Dexie storage.
+ * Keyed by scope (primary key), stores bigint-safe string sequence.
+ */
+export interface PullCursor {
+  scope: string;
+  lastServerSequence: string;
+  updatedAt: string;
+}
+
+/**
  * Status of a synchronization session.
  */
 export type SyncAttemptStatus =

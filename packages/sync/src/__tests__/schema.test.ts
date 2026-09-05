@@ -21,6 +21,7 @@ describe('Local Dexie Database Schema', () => {
     expect(db.sync_operations).toBeDefined();
     expect(db.conflicts).toBeDefined();
     expect(db.sync_cursors).toBeDefined();
+    expect(db.pull_cursors).toBeDefined();
   });
 
   it('supports compound index queries on sync_operations [deviceId+status]', async () => {
@@ -65,5 +66,19 @@ describe('Local Dexie Database Schema', () => {
     const cursor = await db.sync_cursors.get(['dev-1', 'default']);
     expect(cursor).toBeDefined();
     expect(cursor?.lastServerSequence).toBe(42);
+  });
+
+  it('supports primary key lookup on pull_cursors by scope', async () => {
+    const now = new Date().toISOString();
+
+    await db.pull_cursors.put({
+      scope: 'default',
+      lastServerSequence: '105',
+      updatedAt: now,
+    });
+
+    const cursor = await db.pull_cursors.get('default');
+    expect(cursor).toBeDefined();
+    expect(cursor?.lastServerSequence).toBe('105');
   });
 });

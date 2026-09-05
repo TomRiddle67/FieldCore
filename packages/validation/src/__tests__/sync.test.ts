@@ -480,5 +480,49 @@ describe('Sync Model & Protocol Schemas', () => {
       const result = pushResponseSchema.safeParse(pushResp);
       expect(result.success).toBe(true);
     });
+
+    describe('pullRequestSchema', () => {
+      it('validates a valid pull request with defaults', () => {
+        const result = pullRequestSchema.safeParse({
+          deviceId: validUUID,
+          afterSequence: 0,
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.limit).toBe(100);
+          expect(result.data.afterSequence).toBe(0);
+        }
+      });
+
+      it('coerces string limit and validates string afterSequence', () => {
+        const result = pullRequestSchema.safeParse({
+          deviceId: validUUID,
+          afterSequence: '12345',
+          limit: '50',
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.limit).toBe(50);
+          expect(result.data.afterSequence).toBe('12345');
+        }
+      });
+
+      it('rejects invalid limit or negative sequence', () => {
+        expect(
+          pullRequestSchema.safeParse({
+            deviceId: validUUID,
+            afterSequence: -1,
+          }).success
+        ).toBe(false);
+
+        expect(
+          pullRequestSchema.safeParse({
+            deviceId: validUUID,
+            afterSequence: 0,
+            limit: 501,
+          }).success
+        ).toBe(false);
+      });
+    });
   });
 });

@@ -7,6 +7,7 @@ import type {
   SyncOperation,
   ConflictRecord,
   SyncCursor,
+  PullCursor,
 } from '@fieldcore/types';
 
 /**
@@ -20,6 +21,7 @@ export class FieldCoreDexie extends Dexie {
   sync_operations!: Table<SyncOperation, number>; // PK is auto-increment localSeq
   conflicts!: Table<ConflictRecord, string>;
   sync_cursors!: Table<SyncCursor, [string, string]>;
+  pull_cursors!: Table<PullCursor, string>;
 
   constructor(databaseName = 'fieldcore_offline_db') {
     super(databaseName);
@@ -34,6 +36,7 @@ export class FieldCoreDexie extends Dexie {
       sync_operations: '++localSeq, operationId, [deviceId+status], [status+localSeq], [status+nextEligibleRetryAt], entityId, entityType, status, nextEligibleRetryAt, createdAt',
       conflicts: 'conflictId, [entityType+entityId], [entityType+entityId+status], status, conflictType, createdAt',
       sync_cursors: '[deviceId+scope], deviceId, scope, lastServerSequence, lastSyncAt, updatedAt',
+      pull_cursors: 'scope, lastServerSequence, updatedAt',
     });
   }
 }

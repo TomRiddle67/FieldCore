@@ -1,8 +1,9 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
-import { pushRequestSchema } from '@fieldcore/validation';
+import { pushRequestSchema, pullRequestSchema } from '@fieldcore/validation';
 import type { Database } from '@fieldcore/database';
 import { processPushRequest } from './push-handler.js';
+import { processPullRequest, DeviceRevokedError } from './pull-handler.js';
 
 export interface ServerOptions {
   db: Database;
@@ -47,6 +48,41 @@ export function createServer({ db, logger = false }: ServerOptions): FastifyInst
     } catch (err: any) {
       return reply.status(500).send({
         error: 'Internal server error during sync push processing',
+        message: err?.message,
+      });
+    }
+  });
+
+  /**
+   * Pull Synchronization Route.
+   * Fetches monotonic change_log entries strictly ascending from afterSequence.
+   * Device revocation returns HTTP 403.
+   * Expired offline window returns HTTP 200 with cursorExpired: true.
+   */
+  app.get('/sync/pull', async (request, reply) => {
+    const parseResult = pullRequestSchema.safeParse(request.query);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: 'Validation failed',
+        details: parseResult.error.errors,
+      });
+    }
+
+    try {
+      const response = await processPullRequest({
+        db,
+        request: parseResult.data,
+      });
+      return reply.status(200).send(response);
+    } catch (err: any) {
+      if (err instanceof DeviceRevokedError || err?.code === 'DEVICE_REVOKED') {
+        return reply.status(403).send({
+          error: err.message,
+          code: 'DEVICE_REVOKED',
+        });
+      }
+      return reply.status(500).send({
+        error: 'Internal server error during sync pull processing',
         message: err?.message,
       });
     }
