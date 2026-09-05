@@ -1,3 +1,5 @@
+@import './components.css';
+
 :root {
   --bg-primary: #090d16;
   --bg-secondary: #111827;
