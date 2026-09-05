@@ -83,7 +83,24 @@ export class PushSyncService {
       (op) => !op.nextEligibleRetryAt || op.nextEligibleRetryAt <= effectiveNow
     );
     eligible.sort((a, b) => (a.localSeq ?? 0) - (b.localSeq ?? 0));
-    return eligible.slice(0, Math.min(batchSize, 25));
+    const batch = eligible.slice(0, Math.min(batchSize, 25));
+
+    // Cascading-conflict exclusion:
+    // If an unresolved (PENDING) ConflictRecord exists for an operation's entityId,
+    // that entity is locked for mutation until the conflict is resolved by the user.
+    // Exclude such operations from the push batch to prevent racing a second mutation
+    // past an unresolved conflict for the same entity.
+    const filtered: SyncOperation[] = [];
+    for (const op of batch) {
+      const pendingConflict = await this.db.conflicts
+        .where('[entityType+entityId+status]')
+        .equals([op.entityType, op.entityId, 'PENDING'])
+        .first();
+      if (!pendingConflict) {
+        filtered.push(op);
+      }
+    }
+    return filtered;
   }
 
   /**
