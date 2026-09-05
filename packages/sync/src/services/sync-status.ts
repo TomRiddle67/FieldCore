@@ -52,6 +52,14 @@ export class SyncStatusService {
   }
 
   /**
+   * Returns recent conflicts including both PENDING and recently RESOLVED records (e.g. EDIT_DELETE notices).
+   */
+  async getRecentConflicts(limit = 20): Promise<ConflictRecord[]> {
+    const all = await this.db.conflicts.toArray();
+    return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+  }
+
+  /**
    * Returns the timestamp of the last successful sync checkpoint for a given device and scope.
    */
   async getLastSyncAt(deviceId: string, scope = 'default'): Promise<string | null> {

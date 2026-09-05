@@ -50,7 +50,6 @@ function makeConflict(
   return {
     conflictId: crypto.randomUUID(),
     entityType: 'PROJECT',
-    entityId: overrides.entityId,
     operationId: crypto.randomUUID(),
     conflictType: 'EDIT_EDIT',
     serverVersion: 2,
