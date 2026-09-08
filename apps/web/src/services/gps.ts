@@ -21,7 +21,7 @@ export async function captureGpsCoordinates(
   const timeoutMs = options.timeoutMs ?? 5000;
   const enableHighAccuracy = options.enableHighAccuracy ?? true;
 
-  if (typeof window === 'undefined' || !navigator.geolocation) {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
     return null;
   }
 
