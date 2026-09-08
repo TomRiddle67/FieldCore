@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { FieldCoreDexie, ConflictResolutionService } from '@fieldcore/sync';
-import type { ConflictRecord, EditEditConflictRecord } from '@fieldcore/types';
+import type { EditEditConflictRecord } from '@fieldcore/types';
 
 describe('Stage 6 Conflict Drawer Logic & EDIT_DELETE Non-Resolvable Guard', () => {
   let db: FieldCoreDexie;

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import { FieldCoreDexie } from '@fieldcore/sync';
 
 describe('Stage 6 Sync Concurrency Guard & Error Recovery', () => {
   it('guards against concurrent sync invocations (second call while syncing is ignored)', async () => {
