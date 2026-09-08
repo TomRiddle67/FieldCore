@@ -66,11 +66,24 @@ export function SyncProvider({
 
   const repoContext = useMemo<RepositoryContext>(() => {
     if (forcedContext) return forcedContext;
-    const prefix = deviceProfile === 'default' ? '' : `${deviceProfile}_`;
+    if (deviceProfile === 'A') {
+      return {
+        userId: '11111111-1111-4111-8111-111111111111',
+        deviceId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        clientId: 'client-a-id',
+      };
+    }
+    if (deviceProfile === 'B') {
+      return {
+        userId: '11111111-1111-4111-8111-111111111111',
+        deviceId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+        clientId: 'client-b-id',
+      };
+    }
     return {
-      userId: getOrCreateStorageId(`fieldcore_${prefix}userId`, crypto.randomUUID()),
-      deviceId: getOrCreateStorageId(`fieldcore_${prefix}deviceId`, crypto.randomUUID()),
-      clientId: getOrCreateStorageId(`fieldcore_${prefix}clientId`, crypto.randomUUID()),
+      userId: '11111111-1111-4111-8111-111111111111',
+      deviceId: '00000000-0000-0000-0000-000000000000',
+      clientId: 'client-default-id',
     };
   }, [forcedContext, deviceProfile]);
 

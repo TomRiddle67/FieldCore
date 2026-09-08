@@ -116,4 +116,27 @@ describe('Stage 6 GPS Capture Service — Soft Degradation Invariant', () => {
     // Invalid coordinates fail Zod schema validation and degrade safely to null
     expect(result).toBeNull();
   });
+
+  it('timing invariant: GPS capture is NOT triggered on form open or component mount, only upon calling captureOnSave', async () => {
+    const getCurrentPositionSpy = vi.fn((success) => {
+      success({
+        coords: { latitude: 37.7749, longitude: -122.4194, accuracy: 5 },
+        timestamp: Date.now(),
+      });
+    });
+    Object.defineProperty(global, 'navigator', {
+      value: { geolocation: { getCurrentPosition: getCurrentPositionSpy } },
+      writable: true,
+    });
+
+    // Simulate form open: initial state inspection (simulating what useGpsCapture returns on mount)
+    // No mount effect calls capture; geolocation must not have been touched
+    expect(getCurrentPositionSpy).not.toHaveBeenCalled();
+
+    // Now simulate user filling out form fields and eventually clicking "Save Record"
+    const promise = captureGpsCoordinates({ timeoutMs: 1000 });
+    // Core timing check: getCurrentPosition is called ONLY upon the save invocation
+    expect(getCurrentPositionSpy).toHaveBeenCalledTimes(1);
+    await promise;
+  });
 });

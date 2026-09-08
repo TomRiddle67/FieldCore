@@ -14,8 +14,30 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [description, setDescription] = useState('');
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProject) return;
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      await projectRepo.update(editingProject.id, {
+        name: editName.trim(),
+        description: editDescription.trim() || null,
+      });
+      setEditingProject(null);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update project');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,6 +117,17 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
                 <span>Updated: {new Date(p.updatedAt).toLocaleDateString()}</span>
               </div>
               <div className="card-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setEditingProject(p);
+                    setEditName(p.name);
+                    setEditDescription(p.description || '');
+                  }}
+                >
+                  Edit
+                </button>
                 <button
                   type="button"
                   className="btn btn-secondary"
@@ -178,6 +211,64 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
                   disabled={isSubmitting}
                 >
                   {isSubmitting ? 'Creating...' : 'Save Project'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingProject && (
+        <div className="modal-overlay" onClick={() => setEditingProject(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Edit Project</h3>
+              <button
+                type="button"
+                className="btn-close"
+                onClick={() => setEditingProject(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleUpdate}>
+              <div className="modal-body">
+                {error && <div className="form-error">{error}</div>}
+                <div className="form-group">
+                  <label htmlFor="edit-p-name">Project Name *</label>
+                  <input
+                    id="edit-p-name"
+                    className="form-input"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="edit-p-desc">Description (Optional)</label>
+                  <textarea
+                    id="edit-p-desc"
+                    className="form-textarea"
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditingProject(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? 'Updating...' : 'Save Changes'}
                 </button>
               </div>
             </form>

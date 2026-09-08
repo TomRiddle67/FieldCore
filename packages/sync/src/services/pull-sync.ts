@@ -140,6 +140,9 @@ export class PullSyncService {
             continue;
           }
 
+          const safeCreatedAt = new Date(existing?.createdAt ?? change.createdAt).toISOString();
+          const safeUpdatedAt = new Date(change.createdAt).toISOString();
+
           if (change.isTombstone) {
             const tombstoneRecord = {
               ...(existing ?? {}),
@@ -147,9 +150,11 @@ export class PullSyncService {
               id: change.entityId,
               version: change.version,
               isDeleted: true,
-              deletedAt: (change.payload as any)?.deletedAt ?? change.createdAt,
-              createdAt: existing?.createdAt ?? change.createdAt,
-              updatedAt: change.createdAt,
+              deletedAt: (change.payload as any)?.deletedAt
+                ? new Date((change.payload as any).deletedAt).toISOString()
+                : safeUpdatedAt,
+              createdAt: safeCreatedAt,
+              updatedAt: safeUpdatedAt,
             };
             await table.put(tombstoneRecord);
             appliedCount++;
@@ -161,8 +166,8 @@ export class PullSyncService {
               version: change.version,
               isDeleted: false,
               deletedAt: null,
-              createdAt: existing?.createdAt ?? change.createdAt,
-              updatedAt: change.createdAt,
+              createdAt: safeCreatedAt,
+              updatedAt: safeUpdatedAt,
             };
             await table.put(updatedRecord);
             appliedCount++;

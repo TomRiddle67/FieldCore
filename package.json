@@ -5,7 +5,7 @@
   "description": "Offline-first field operations platform for connectivity-constrained geoscience, mining, surveying, and industrial field environments",
   "scripts": {
     "build": "pnpm -r --filter=!@fieldcore/web build",
-    "test": "pnpm -r test",
+    "test": "pnpm -r --filter=!@fieldcore/web test && pnpm --filter @fieldcore/web test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },

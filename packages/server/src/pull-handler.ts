@@ -77,7 +77,7 @@ export async function processPullRequest({
     changedByUserId: row.changedByUserId,
     changedByDeviceId: row.changedByDeviceId,
     operationId: row.operationId,
-    createdAt: row.createdAt,
+    createdAt: new Date(row.createdAt).toISOString(),
   }));
 
   const latestSequence =

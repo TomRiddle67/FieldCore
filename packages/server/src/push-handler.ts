@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { Database } from '@fieldcore/database';
 import {
   devices,
@@ -114,16 +114,23 @@ export async function processPushRequest({
   for (const op of request.operations) {
     // Fast-path: query idempotency_records to avoid opening transactions for committed retries.
     // Bypassed for nominated IDs in tests to force the transaction-level 23505 race path.
-    const skipFastPath = skipFastPathForOperationIds?.has(op.operationId) ?? false;
-    if (!skipFastPath) {
+    if (op.operationId && !skipFastPathForOperationIds?.has(op.operationId)) {
       const [cached] = await db
         .select()
         .from(idempotencyRecords)
         .where(eq(idempotencyRecords.operationId, op.operationId));
 
       if (cached) {
-        results.push(cached.responsePayload as unknown as PushOperationResult);
-        continue;
+        const cachedClientVersion = (cached.responsePayload as any)?.conflict?.clientVersion;
+        const isResolvedConflictRetry =
+          cached.status === 'CONFLICT' &&
+          op.baseVersion !== undefined &&
+          op.baseVersion !== cachedClientVersion;
+
+        if (!isResolvedConflictRetry) {
+          results.push(cached.responsePayload as unknown as PushOperationResult);
+          continue;
+        }
       }
     }
 
@@ -139,6 +146,20 @@ export async function processPushRequest({
           .for('update');
 
         const nowIso = new Date().toISOString();
+
+        // If this operation previously recorded a CONFLICT but is being retried
+        // after client conflict resolution (e.g. KEEP_MINE with advanced baseVersion),
+        // purge the old CONFLICT record so the newly resolved mutation can commit.
+        if (op.operationId) {
+          await tx
+            .delete(idempotencyRecords)
+            .where(
+              and(
+                eq(idempotencyRecords.operationId, op.operationId),
+                eq(idempotencyRecords.status, 'CONFLICT')
+              )
+            );
+        }
 
         // Branch A: CREATE operation
         if (op.operationType === 'CREATE') {
