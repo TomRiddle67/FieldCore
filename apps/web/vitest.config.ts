@@ -6,5 +6,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    // Two-device E2E tests make real HTTP round-trips to the local sync server
+    // and need more than the default 5s timeout.
+    testTimeout: 15000,
   },
 });
