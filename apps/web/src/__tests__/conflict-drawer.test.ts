@@ -75,8 +75,12 @@ describe('Stage 6 Conflict Drawer Logic & EDIT_DELETE Non-Resolvable Guard', () 
     expect(updatedConflict?.status).toBe('RESOLVED');
     expect(updatedConflict?.resolution).toBe('KEEP_MINE');
 
-    const op = await db.sync_operations.where('operationId').equals(operationId).first();
-    expect(op?.status).toBe('PENDING');
+    const origOp = await db.sync_operations.where('operationId').equals(operationId).first();
+    expect(origOp?.status).toBe('REJECTED');
+
+    const pendingOp = await db.sync_operations.where('status').equals('PENDING').first();
+    expect(pendingOp?.operationId).not.toBe(operationId);
+    expect(pendingOp?.baseVersion).toBe(2);
   });
 
   it('proves that EDIT_DELETE conflicts are non-user-resolvable and must be read-only in UI', async () => {

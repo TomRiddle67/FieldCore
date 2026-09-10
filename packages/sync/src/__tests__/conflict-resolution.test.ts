@@ -533,13 +533,19 @@ describe('Stage 5-C: Stale-conflict resolution against current live version', ()
     expect(storedConflict?.status).toBe('RESOLVED');
     expect(storedConflict?.resolution).toBe('KEEP_MINE');
 
-    // Operation is back in PENDING with baseVersion advanced to the server's version (2)
-    // This ensures the next push won't produce a stale-version conflict for the same mismatch
-    const op = await db.sync_operations.where('operationId').equals(operationId).first();
-    expect(op?.status).toBe('PENDING');
-    expect(op?.baseVersion).toBe(2); // Advanced from 1 to serverVersion(2)
-    expect(op?.errorMessage).toBeNull();
-    expect(op?.nextEligibleRetryAt).toBeNull();
+    // Original conflicting operation is marked REJECTED (terminal, for audit)
+    const originalOp = await db.sync_operations.where('operationId').equals(operationId).first();
+    expect(originalOp?.status).toBe('REJECTED');
+
+    // Fresh operation is enqueued as PENDING with fresh operationId, fresh localSeq,
+    // and baseVersion advanced to serverVersion (2)
+    const pendingOps = await db.sync_operations.where('status').equals('PENDING').toArray();
+    expect(pendingOps.length).toBe(1);
+    const op = pendingOps[0];
+    expect(op.operationId).not.toBe(operationId);
+    expect(op.baseVersion).toBe(2); // Advanced from 1 to serverVersion(2)
+    expect(op.errorMessage).toBeNull();
+    expect(op.nextEligibleRetryAt).toBeNull();
 
     // Domain record is left as-is (client's optimistic state)
     const entity = await db.projects.get(entityId);
@@ -862,11 +868,17 @@ describe('Stage 5-D: Pull reclassifying conflict — entity deleted before user 
     expect(result.resolution).toBe('KEEP_MINE');
     expect(result.reclassifiedToEditDelete).toBe(false);
 
-    // 5. Assert the re-queued operation has baseVersion = 3 (the live entity version), NOT 2 (cached conflict.serverVersion)
-    const op = await db.sync_operations.where('operationId').equals(operationId).first();
-    expect(op?.status).toBe('PENDING');
-    expect(op?.baseVersion).toBe(3); // Proves baseVersion advanced to live entity version (3), preventing repeated 409
-    expect(op?.errorMessage).toBeNull();
+    // 5. Assert the original operation is REJECTED and new PENDING op has baseVersion = 3
+    // (the live entity version), NOT 2 (cached conflict.serverVersion), under a fresh operationId
+    const originalOp = await db.sync_operations.where('operationId').equals(operationId).first();
+    expect(originalOp?.status).toBe('REJECTED');
+
+    const pendingOps = await db.sync_operations.where('status').equals('PENDING').toArray();
+    expect(pendingOps.length).toBe(1);
+    const op = pendingOps[0];
+    expect(op.operationId).not.toBe(operationId);
+    expect(op.baseVersion).toBe(3); // Proves baseVersion advanced to live entity version (3), preventing repeated 409
+    expect(op.errorMessage).toBeNull();
   });
 });
 
@@ -1026,11 +1038,17 @@ describe('Stage 5-E: Capstone convergence — two clients converge after KEEP_MI
     });
     expect(resolveResult.resolution).toBe('KEEP_MINE');
 
-    // op is re-queued as PENDING with updated baseVersion
-    const reQueuedOp = await clientADb.sync_operations
+    // Original operation is REJECTED for audit
+    const originalOp = await clientADb.sync_operations
       .where('operationId').equals(conflictOperationId).first();
-    expect(reQueuedOp?.status).toBe('PENDING');
-    expect(reQueuedOp?.baseVersion).toBe(2); // Advanced to server version
+    expect(originalOp?.status).toBe('REJECTED');
+
+    // Fresh operation is enqueued as PENDING with updated baseVersion and fresh operationId
+    const pendingOps = await clientADb.sync_operations.where('status').equals('PENDING').toArray();
+    expect(pendingOps.length).toBe(1);
+    const reQueuedOp = pendingOps[0];
+    expect(reQueuedOp.operationId).not.toBe(conflictOperationId);
+    expect(reQueuedOp.baseVersion).toBe(2); // Advanced to server version
 
     // ── Step 6: Client A pushes again, this time it APPLIES ───────────────
     const aSecondPushTransport: PushTransport = async (req) => ({

@@ -116,8 +116,14 @@ describe('Stage 6 Two-Device Convergence & Conflict Resolution E2E (Live Server)
     expect(resolvedConflict?.status).toBe('RESOLVED');
     expect(resolvedConflict?.resolution).toBe('KEEP_MINE');
 
+    // Verify original conflicting operation is marked REJECTED (terminal, for audit)
+    const origOpOnA = await dbA.sync_operations.where('operationId').equals(conflict.operationId).first();
+    expect(origOpOnA?.status).toBe('REJECTED');
+
+    // Fresh operation is enqueued as PENDING with fresh operationId, fresh localSeq, and baseVersion: 2
     const pendingOpsOnA = await dbA.sync_operations.where('status').equals('PENDING').toArray();
     expect(pendingOpsOnA.length).toBe(1);
+    expect(pendingOpsOnA[0].operationId).not.toBe(conflict.operationId);
     expect(pendingOpsOnA[0].baseVersion).toBe(2);
 
     // Step 8: Device A syncs again -> push succeeds at v3

@@ -74,6 +74,10 @@ export interface ResolveResult {
    * the live domain record at resolution time.
    */
   reclassifiedToEditDelete?: boolean;
+  /**
+   * The fresh operationId minted for the re-queued operation under KEEP_MINE.
+   */
+  newOperationId?: string;
 }
 
 /**
@@ -199,6 +203,8 @@ export class ConflictResolutionService {
           .equals(conflict.operationId)
           .first();
 
+        let newOperationId: string | undefined;
+
         if (effectiveResolution === 'KEEP_SERVER') {
           // 3a. KEEP_SERVER: overwrite local domain record with serverState, reject the operation.
           // serverState already reflects the authoritative server snapshot captured at conflict time.
@@ -224,11 +230,10 @@ export class ConflictResolutionService {
               });
           }
         } else {
-          // 3b. KEEP_MINE: re-queue operation as PENDING with updated baseVersion.
-          // The operation's baseVersion is advanced to the current live entity version
-          // (which may have been advanced further by an intervening pull since the conflict was recorded)
-          // so that the server will evaluate it against the current authoritative version
-          // instead of producing a second conflict for the stale conflict-time version.
+          // 3b. KEEP_MINE:
+          // Invariant (Stage 5 Lock): The re-queued mutation gets a fresh operationId
+          // and fresh localSeq on KEEP_MINE — it is a new mutation attempt, not a replay.
+          // The original conflicting operation stays REJECTED (terminal, for audit).
           const updatedBaseVersion = liveEntity?.version != null
             ? Math.max(liveEntity.version, conflict.serverVersion)
             : conflict.serverVersion;
@@ -238,11 +243,29 @@ export class ConflictResolutionService {
               .where('operationId')
               .equals(conflict.operationId)
               .modify({
-                status: 'PENDING',
-                baseVersion: updatedBaseVersion,
-                errorMessage: null,
-                nextEligibleRetryAt: null,
+                status: 'REJECTED',
+                errorMessage: 'Superseded by KEEP_MINE re-queued operation.',
               });
+
+            newOperationId = crypto.randomUUID();
+            const freshOp = {
+              operationId: newOperationId,
+              entityType: linkedOp.entityType,
+              entityId: linkedOp.entityId,
+              operationType: linkedOp.operationType,
+              baseVersion: updatedBaseVersion,
+              payload: linkedOp.payload,
+              status: 'PENDING' as const,
+              clientId: linkedOp.clientId,
+              deviceId: linkedOp.deviceId,
+              userId: linkedOp.userId,
+              createdAt: nowIso,
+              retryCount: 0,
+              errorMessage: null,
+              nextEligibleRetryAt: null,
+            };
+
+            await this.db.sync_operations.add(freshOp);
           }
           // Local domain record remains as-is: the optimistic state in Dexie is what the user wants kept.
         }
@@ -251,6 +274,7 @@ export class ConflictResolutionService {
           conflictId,
           resolution: effectiveResolution,
           reclassifiedToEditDelete,
+          newOperationId,
         };
       }
     );
