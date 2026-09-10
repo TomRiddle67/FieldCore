@@ -17,8 +17,15 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const filteredProjects = projects.filter((p) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q);
+  });
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,6 +96,40 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
         </button>
       </div>
 
+      {projects.length > 0 && (
+        <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="search"
+            placeholder="Search projects by name or code..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{
+              padding: '0.5rem 0.85rem',
+              borderRadius: '6px',
+              border: '1px solid #374151',
+              backgroundColor: '#1f2937',
+              color: '#f3f4f6',
+              fontSize: '0.875rem',
+              width: '100%',
+              maxWidth: '360px',
+            }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setSearch('')}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.75rem' }}
+            >
+              Clear
+            </button>
+          )}
+          <span style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>
+            Showing {filteredProjects.length} of {projects.length} projects (newest first)
+          </span>
+        </div>
+      )}
+
       {projects.length === 0 ? (
         <div className="empty-state">
           <p>No active projects found offline.</p>
@@ -101,9 +142,21 @@ export function ProjectExplorer({ onSelectProject }: ProjectExplorerProps) {
             Create First Project
           </button>
         </div>
+      ) : filteredProjects.length === 0 ? (
+        <div className="empty-state">
+          <p>No projects match "{search}".</p>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginTop: '1rem' }}
+            onClick={() => setSearch('')}
+          >
+            Clear Search
+          </button>
+        </div>
       ) : (
         <div className="entity-grid">
-          {projects.map((p) => (
+          {filteredProjects.map((p) => (
             <div key={p.id} className="entity-card">
               <div className="card-header-line">
                 <div>

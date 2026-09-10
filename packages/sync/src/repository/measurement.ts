@@ -126,11 +126,13 @@ export class MeasurementRepository extends BaseRepository<Measurement> {
   }
 
   /**
-   * Lists measurements by inspection ID.
+   * Lists measurements by inspection ID, ordered newest first (createdAt descending).
    */
   async listByInspectionId(inspectionId: string, includeDeleted = false): Promise<Measurement[]> {
     const records = await this.table.where('inspectionId').equals(inspectionId).toArray();
-    if (includeDeleted) return records;
-    return records.filter((r) => !r.isDeleted);
+    const filtered = includeDeleted ? records : records.filter((r) => !r.isDeleted);
+    return filtered.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }
 }

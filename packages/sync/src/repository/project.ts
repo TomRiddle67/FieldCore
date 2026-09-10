@@ -111,13 +111,13 @@ export class ProjectRepository extends BaseRepository<Project> {
   }
 
   /**
-   * Lists active projects.
+   * Lists active projects, ordered newest first (createdAt descending).
    */
   async list(includeDeleted = false): Promise<Project[]> {
     const records = await this.table.toArray();
-    if (includeDeleted) {
-      return records;
-    }
-    return records.filter((r) => !r.isDeleted);
+    const filtered = includeDeleted ? records : records.filter((r) => !r.isDeleted);
+    return filtered.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }
 }

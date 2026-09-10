@@ -124,11 +124,13 @@ export class InspectionRepository extends BaseRepository<Inspection> {
   }
 
   /**
-   * Lists inspections by site ID.
+   * Lists inspections by site ID, ordered newest first (createdAt descending).
    */
   async listBySiteId(siteId: string, includeDeleted = false): Promise<Inspection[]> {
     const records = await this.table.where('siteId').equals(siteId).toArray();
-    if (includeDeleted) return records;
-    return records.filter((r) => !r.isDeleted);
+    const filtered = includeDeleted ? records : records.filter((r) => !r.isDeleted);
+    return filtered.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }
 }

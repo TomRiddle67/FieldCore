@@ -7,7 +7,8 @@
     "build": "pnpm -r --filter=!@fieldcore/web build",
     "test": "pnpm -r --filter=!@fieldcore/web test && pnpm --filter @fieldcore/web test",
     "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "db:clean": "pnpm --filter @fieldcore/database db:clean"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

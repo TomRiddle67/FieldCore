@@ -114,11 +114,13 @@ export class SiteRepository extends BaseRepository<Site> {
   }
 
   /**
-   * Lists sites by project ID.
+   * Lists sites by project ID, ordered newest first (createdAt descending).
    */
   async listByProjectId(projectId: string, includeDeleted = false): Promise<Site[]> {
     const records = await this.table.where('projectId').equals(projectId).toArray();
-    if (includeDeleted) return records;
-    return records.filter((r) => !r.isDeleted);
+    const filtered = includeDeleted ? records : records.filter((r) => !r.isDeleted);
+    return filtered.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }
 }
