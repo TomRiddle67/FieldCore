@@ -4,6 +4,14 @@ Offline-first field operations platform engineered for connectivity-constrained 
 
 ---
 
+## About FieldCore
+
+FieldCore is a resilient, local-first web and PWA architecture designed for field teams operating in remote or underground environments with intermittent, high-latency, or nonexistent network connectivity. 
+
+Unlike conventional cloud-centric applications that treat offline usage as an exception or edge-case fallback, FieldCore treats the local client device as the primary system of record for active work. Field technicians create, update, and organize multi-tiered relational hierarchies (Projects, Sites, Inspections, and Measurements) with zero network dependency. When network access is available, FieldCore synchronizes changes bi-directionally with the central PostgreSQL datastore using monotonic sequence tracking, crash-resilient isolated transactions, and deterministic whole-record conflict resolution.
+
+---
+
 ## 1. Project Status (v1 Complete)
 
 All six architectural stages (Milestones 1–4 / A–E) are fully implemented, verified with adversarial test suites against live PostgreSQL and simulated network conditions, and committed to `main`.
