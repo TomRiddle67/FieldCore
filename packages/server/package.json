@@ -17,12 +17,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fieldcore/database": "workspace:*",
     "@fieldcore/types": "workspace:*",
     "@fieldcore/validation": "workspace:*",
-    "@fieldcore/database": "workspace:*",
+    "argon2": "^0.45.1",
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.1",
-    "@fastify/cors": "^10.0.2",
+    "jose": "^6.2.12",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
