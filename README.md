@@ -110,12 +110,29 @@ git clone git@github.com:TomRiddle67/FieldCore.git
 cd FieldCore
 pnpm install
 
-# 2. Start PostgreSQL container
+# 2. Configure environment
+cp .env.example .env
+# Set JWT_SECRET in .env to a secure 32+ character string:
+# JWT_SECRET=$(openssl rand -hex 32)
+
+# 3. Start PostgreSQL container
 docker compose up -d
 
-# 3. Push schema to local PostgreSQL
-pnpm --filter @fieldcore/database db:push
+# 4. Push / migrate schema to local PostgreSQL
+pnpm --filter @fieldcore/database db:migrate
 ```
+
+### Environment Configuration
+
+FieldCore uses environment variables for database connectivity and authentication:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | No | `postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore` | PostgreSQL connection string |
+| `PORT` | No | `3001` | Fastify sync server port |
+| `JWT_SECRET` | **Yes** (Prod) | Dev fallback in `bin.ts` | HS256 secret for signing access tokens (>= 32 chars). Server fails closed at startup if missing or < 32 chars. |
+| `ACCESS_TOKEN_TTL_SECONDS` | No | `900` (15m) | Access token expiration lifetime in seconds |
+| `REFRESH_TOKEN_TTL_DAYS` | No | `30` (30d) | Refresh token expiration lifetime in days |
 
 ### Running Tests
 ```bash
