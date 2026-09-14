@@ -43,6 +43,11 @@ describe('Authentication Route Integration & Isolation Suite', () => {
   const mainDeviceId = randomUUID();
   const revokedDeviceId = randomUUID();
 
+  // Secondary user to prove device ownership isolation
+  const otherUserId = randomUUID();
+  const otherUserEmail = `other-user-${randomUUID()}@fieldcore.io`;
+  const otherUserDeviceId = randomUUID();
+
   beforeAll(async () => {
     testPasswordHash = await hashPassword(testUserPassword);
 
@@ -56,7 +61,17 @@ describe('Authentication Route Integration & Isolation Suite', () => {
     });
     createdUserIds.push(mainUserId);
 
-    // Create active test device
+    // Create secondary test user
+    await db.insert(users).values({
+      id: otherUserId,
+      email: otherUserEmail,
+      name: 'Other Engineer',
+      role: 'GEOLOGIST',
+      passwordHash: testPasswordHash,
+    });
+    createdUserIds.push(otherUserId);
+
+    // Create active test device for primary user
     await db.insert(devices).values({
       id: mainDeviceId,
       userId: mainUserId,
@@ -68,6 +83,19 @@ describe('Authentication Route Integration & Isolation Suite', () => {
       offlineAuthWindowDays: 7,
     });
     createdDeviceIds.push(mainDeviceId);
+
+    // Create test device owned by secondary user
+    await db.insert(devices).values({
+      id: otherUserDeviceId,
+      userId: otherUserId,
+      deviceIdentifier: `other-dev-${randomUUID()}`,
+      name: 'Other User Tablet',
+      platform: 'DESKTOP',
+      isRevoked: false,
+      lastRevalidatedAt: new Date().toISOString(),
+      offlineAuthWindowDays: 7,
+    });
+    createdDeviceIds.push(otherUserDeviceId);
 
     // Create revoked test device
     await db.insert(devices).values({
@@ -197,6 +225,24 @@ describe('Authentication Route Integration & Isolation Suite', () => {
       expect(res.statusCode).toBe(400);
       const body = JSON.parse(res.body);
       expect(body.code).toBe('DEVICE_NOT_FOUND');
+    });
+
+    it('rejects login when device belongs to a different user (cross-user device hijacking)', async () => {
+      // mainUser has valid credentials, but passes otherUserDeviceId (registered to otherUser)
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: mainUserEmail,
+          password: testUserPassword,
+          deviceId: otherUserDeviceId,
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('DEVICE_NOT_FOUND');
+      expect(body.message).toBe('The specified deviceId is not registered to this account.');
     });
   });
 
