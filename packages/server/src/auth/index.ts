@@ -11,3 +11,5 @@ export type { LoginBody, LoginResponse } from './login.js';
 export { registerRefreshRoute } from './refresh.js';
 export type { RefreshResponse } from './refresh.js';
 export { registerLogoutRoute } from './logout.js';
+export { registerDeviceRoute } from './devices.js';
+export type { RegisterDeviceBody, RegisterDeviceResponse } from './devices.js';

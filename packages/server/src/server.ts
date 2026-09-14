@@ -9,6 +9,7 @@ import {
   registerLoginRoute,
   registerRefreshRoute,
   registerLogoutRoute,
+  registerDeviceRoute,
 } from './auth/index.js';
 
 export interface ServerOptions {
@@ -20,9 +21,10 @@ export interface ServerOptions {
  * Creates and configures the FieldCore Fastify sync server.
  *
  * Authentication routes:
- *   POST /auth/login    — password login, issues access + refresh tokens
- *   POST /auth/refresh  — issue new access token from refresh token
- *   POST /auth/logout   — revoke current session (requires Bearer token)
+ *   POST /auth/login            — password login, issues access + refresh tokens
+ *   POST /auth/refresh          — issue new access token from refresh token
+ *   POST /auth/logout           — revoke current session (requires Bearer token)
+ *   POST /auth/devices/register — register new device (requires Bearer token)
  *
  * Sync routes (currently unauthenticated — Phase 2 will add requireAuth):
  *   POST /sync/push
@@ -47,6 +49,7 @@ export function createServer({ db, logger = false }: ServerOptions): FastifyInst
   registerLoginRoute(app, db, authConfig);
   registerRefreshRoute(app, db, authConfig);
   registerLogoutRoute(app, db, authConfig);
+  registerDeviceRoute(app, db, authConfig);
 
   // ---------- Sync routes ----------
 
