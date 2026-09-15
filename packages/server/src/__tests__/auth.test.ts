@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { SignJWT } from 'jose';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { signAccessToken, verifyAccessToken } from '../auth/jwt.js';
 import { generateRefreshToken, hashRefreshToken } from '../auth/token.js';
@@ -130,6 +131,93 @@ describe('signAccessToken / verifyAccessToken', () => {
     expect(iat).toBeGreaterThanOrEqual(before);
     expect(iat).toBeLessThanOrEqual(after + 1);
     expect(exp - iat).toBe(config.accessTokenTtlSeconds);
+  });
+
+  it('rejects token declaring alg:none', async () => {
+    const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(
+      JSON.stringify({
+        sub: claims.sub,
+        deviceId: claims.deviceId,
+        sid: claims.sid,
+        exp: Math.floor(Date.now() / 1000) + 900,
+      })
+    ).toString('base64url');
+    const noneToken = `${header}.${payload}.`;
+    await expect(verifyAccessToken(noneToken, config)).rejects.toThrow();
+  });
+
+  it('rejects token declaring unexpected/wrong algorithm (e.g. HS384)', async () => {
+    const secret = new TextEncoder().encode(config.jwtSecret);
+    const token = await new SignJWT({
+      sub: claims.sub,
+      deviceId: claims.deviceId,
+      sid: claims.sid,
+    })
+      .setProtectedHeader({ alg: 'HS384' })
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(secret);
+
+    await expect(verifyAccessToken(token, config)).rejects.toThrow();
+  });
+
+  it('rejects expired JWT access token', async () => {
+    const secret = new TextEncoder().encode(config.jwtSecret);
+    const expiredToken = await new SignJWT({
+      sub: claims.sub,
+      deviceId: claims.deviceId,
+      sid: claims.sid,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt(Math.floor(Date.now() / 1000) - 3600)
+      .setExpirationTime(Math.floor(Date.now() / 1000) - 1800)
+      .sign(secret);
+
+    await expect(verifyAccessToken(expiredToken, config)).rejects.toThrow();
+  });
+
+  it('rejects token missing required claims (sub, deviceId, sid)', async () => {
+    const secret = new TextEncoder().encode(config.jwtSecret);
+
+    // Missing deviceId
+    const missingDeviceToken = await new SignJWT({
+      sub: claims.sub,
+      sid: claims.sid,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(secret);
+    await expect(verifyAccessToken(missingDeviceToken, config)).rejects.toThrow(
+      'JWT missing required claim: deviceId'
+    );
+
+    // Missing sub
+    const missingSubToken = await new SignJWT({
+      deviceId: claims.deviceId,
+      sid: claims.sid,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(secret);
+    await expect(verifyAccessToken(missingSubToken, config)).rejects.toThrow(
+      'JWT missing required claim: sub'
+    );
+
+    // Missing sid
+    const missingSidToken = await new SignJWT({
+      sub: claims.sub,
+      deviceId: claims.deviceId,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(secret);
+    await expect(verifyAccessToken(missingSidToken, config)).rejects.toThrow(
+      'JWT missing required claim: sid'
+    );
   });
 });
 

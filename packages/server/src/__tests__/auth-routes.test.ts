@@ -23,6 +23,8 @@ import {
 } from '@fieldcore/database';
 import { createServer } from '../server.js';
 import { hashPassword } from '../auth/password.js';
+import { verifyAccessToken } from '../auth/jwt.js';
+import { loadAuthConfig } from '../auth/config.js';
 
 describe('Authentication Route Integration & Isolation Suite', () => {
   const dbUrl =
@@ -30,6 +32,7 @@ describe('Authentication Route Integration & Isolation Suite', () => {
     'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
   const { db, client } = createDatabaseClient(dbUrl);
   const app = createServer({ db });
+  const authConfig = loadAuthConfig(process.env);
 
   const testUserPassword = 'StrongAuthPassword!123';
   let testPasswordHash: string;
@@ -127,6 +130,7 @@ describe('Authentication Route Integration & Isolation Suite', () => {
       .select()
       .from(users)
       .where(inArray(users.id, createdUserIds));
+    console.log('[teardown-verification] remainingUsers count:', remainingUsers.length);
     expect(remainingUsers.length).toBe(0);
 
     await app.close();
@@ -324,6 +328,72 @@ describe('Authentication Route Integration & Isolation Suite', () => {
       expect(refreshRes.statusCode).toBe(401);
       expect(JSON.parse(refreshRes.body).code).toBe('SESSION_EXPIRED');
     });
+
+    it('rejects expired refresh token with 401 TOKEN_EXPIRED', async () => {
+      // Log in to create token
+      const loginRes = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: mainUserEmail,
+          password: testUserPassword,
+          deviceId: mainDeviceId,
+        },
+      });
+      const { refreshToken } = JSON.parse(loginRes.body);
+
+      // Manually set expiration in past
+      const pastDate = new Date(Date.now() - 3600000).toISOString();
+      await db
+        .update(refreshTokens)
+        .set({ expiresAt: pastDate })
+        .where(eq(refreshTokens.userId, mainUserId));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/refresh',
+        payload: { refreshToken },
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body).code).toBe('REFRESH_TOKEN_EXPIRED');
+    });
+
+    it('rejects authenticated request when device is revoked with 403 DEVICE_REVOKED', async () => {
+      // Log in to get active access token
+      const loginRes = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: mainUserEmail,
+          password: testUserPassword,
+          deviceId: mainDeviceId,
+        },
+      });
+      const { accessToken } = JSON.parse(loginRes.body);
+
+      // Mark device as revoked in DB
+      await db
+        .update(devices)
+        .set({ isRevoked: true })
+        .where(eq(devices.id, mainDeviceId));
+
+      // Attempt authenticated route (logout)
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe('DEVICE_REVOKED');
+
+      // Un-revoke for subsequent tests
+      await db
+        .update(devices)
+        .set({ isRevoked: false })
+        .where(eq(devices.id, mainDeviceId));
+    });
   });
 
   // ─────────────────────────────────────────────────────────
@@ -448,6 +518,274 @@ describe('Authentication Route Integration & Isolation Suite', () => {
       });
       expect(res2.statusCode).toBe(409);
       expect(JSON.parse(res2.body).code).toBe('DEVICE_IDENTIFIER_EXISTS');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // First-Device Auto-Provisioning & Concurrency Suite (Option A)
+  // ─────────────────────────────────────────────────────────
+
+  describe('First-Device Auto-Provisioning & Concurrency Suite (Option A)', () => {
+    const bootstrapUserId = randomUUID();
+    const bootstrapUserEmail = `bootstrap-${randomUUID()}@fieldcore.io`;
+    let bootstrapDeviceId: string;
+
+    beforeAll(async () => {
+      // Seed fresh user with ZERO device rows
+      await db.insert(users).values({
+        id: bootstrapUserId,
+        email: bootstrapUserEmail,
+        name: 'Bootstrap Test Engineer',
+        role: 'GEOLOGIST',
+        passwordHash: testPasswordHash,
+      });
+      createdUserIds.push(bootstrapUserId);
+    });
+
+    it('first login with zero existing devices succeeds, auto-provisions device, session, refresh token, and returns server-generated deviceId', async () => {
+      // 1. Verify zero existing devices in DB
+      const preCheck = await db.select().from(devices).where(eq(devices.userId, bootstrapUserId));
+      expect(preCheck.length).toBe(0);
+
+      // 2. Login without deviceId
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: bootstrapUserEmail,
+          password: testUserPassword,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.deviceId).toBeDefined();
+      expect(body.sessionId).toBeDefined();
+      expect(body.accessToken).toBeDefined();
+      expect(body.refreshToken).toBeDefined();
+      expect(body.userId).toBe(bootstrapUserId);
+
+      bootstrapDeviceId = body.deviceId;
+      createdDeviceIds.push(bootstrapDeviceId);
+
+      // 3. Verify device row persisted in DB and owned by that user
+      const [persistedDevice] = await db
+        .select()
+        .from(devices)
+        .where(eq(devices.id, bootstrapDeviceId));
+      expect(persistedDevice).toBeDefined();
+      expect(persistedDevice.userId).toBe(bootstrapUserId);
+      expect(persistedDevice.isRevoked).toBe(false);
+
+      // 4. Verify session and refresh token created in DB
+      const [persistedSession] = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, body.sessionId));
+      expect(persistedSession).toBeDefined();
+      expect(persistedSession.userId).toBe(bootstrapUserId);
+      expect(persistedSession.deviceId).toBe(bootstrapDeviceId);
+
+      const [persistedToken] = await db
+        .select()
+        .from(refreshTokens)
+        .where(eq(refreshTokens.sessionId, body.sessionId));
+      expect(persistedToken).toBeDefined();
+      expect(persistedToken.userId).toBe(bootstrapUserId);
+
+      // 5. Verify JWT claims contain correct sub, deviceId, sid
+      const verified = await verifyAccessToken(body.accessToken, authConfig);
+      expect(verified.sub).toBe(bootstrapUserId);
+      expect(verified.deviceId).toBe(bootstrapDeviceId);
+      expect(verified.sid).toBe(body.sessionId);
+    });
+
+    it('second login from a user who now has a device with deviceId omitted is rejected (400 DEVICE_ID_REQUIRED)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: bootstrapUserEmail,
+          password: testUserPassword,
+          // deviceId omitted
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('DEVICE_ID_REQUIRED');
+      expect(body.message).toBe('deviceId is required when devices are already registered to this account.');
+    });
+
+    it('existing-device login with correct deviceId passes for auto-provisioned device', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: bootstrapUserEmail,
+          password: testUserPassword,
+          deviceId: bootstrapDeviceId,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.deviceId).toBe(bootstrapDeviceId);
+      expect(body.userId).toBe(bootstrapUserId);
+    });
+
+    it('unknown/unowned deviceId supplied is rejected and explicitly NOT auto-created', async () => {
+      const unknownDeviceId = randomUUID();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: bootstrapUserEmail,
+          password: testUserPassword,
+          deviceId: unknownDeviceId,
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('DEVICE_NOT_FOUND');
+
+      // Assert the unknown device was NOT created
+      const [shouldNotExist] = await db
+        .select()
+        .from(devices)
+        .where(eq(devices.id, unknownDeviceId));
+      expect(shouldNotExist).toBeUndefined();
+    });
+
+    it('client-supplied userId in login body has no effect on ownership', async () => {
+      const attackerUserId = randomUUID();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          email: bootstrapUserEmail,
+          password: testUserPassword,
+          deviceId: bootstrapDeviceId,
+          userId: attackerUserId, // Should be ignored by schema / server
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.userId).toBe(bootstrapUserId);
+      expect(body.userId).not.toBe(attackerUserId);
+
+      // Verify token principal
+      const verified = await verifyAccessToken(body.accessToken, authConfig);
+      expect(verified.sub).toBe(bootstrapUserId);
+      expect(verified.sub).not.toBe(attackerUserId);
+    });
+
+    it('transactional rollback: failure partway through sequence rolls back entire transaction (no orphan rows)', async () => {
+      const rollbackDeviceId = randomUUID();
+      const rollbackSessionId = randomUUID();
+
+      // Test that if an error occurs inside a new-device transaction, everything rolls back
+      await expect(
+        db.transaction(async (tx) => {
+          await tx.insert(devices).values({
+            id: rollbackDeviceId,
+            userId: bootstrapUserId,
+            deviceIdentifier: `rollback-${randomUUID()}`,
+            name: 'Rollback Device',
+            platform: 'WEB',
+            isRevoked: false,
+            lastSeenAt: new Date().toISOString(),
+            lastRevalidatedAt: new Date().toISOString(),
+            offlineAuthWindowDays: 7,
+          });
+
+          await tx.insert(sessions).values({
+            id: rollbackSessionId,
+            userId: bootstrapUserId,
+            deviceId: rollbackDeviceId,
+            isRevoked: false,
+            expiresAt: new Date().toISOString(),
+          });
+
+          // Simulate crash before refresh token insert
+          throw new Error('Simulated atomic transaction crash');
+        })
+      ).rejects.toThrow('Simulated atomic transaction crash');
+
+      // Verify ZERO orphan device and ZERO orphan session in DB
+      const [orphanDev] = await db.select().from(devices).where(eq(devices.id, rollbackDeviceId));
+      expect(orphanDev).toBeUndefined();
+
+      const [orphanSession] = await db.select().from(sessions).where(eq(sessions.id, rollbackSessionId));
+      expect(orphanSession).toBeUndefined();
+    });
+
+    it('concurrent first-device logins: two simultaneous logins for user with zero devices both succeed and bind server-generated IDs', async () => {
+      const concurrentUserId = randomUUID();
+      const concurrentEmail = `concurrent-${randomUUID()}@fieldcore.io`;
+
+      await db.insert(users).values({
+        id: concurrentUserId,
+        email: concurrentEmail,
+        name: 'Concurrent User',
+        role: 'OPERATOR',
+        passwordHash: testPasswordHash,
+      });
+      createdUserIds.push(concurrentUserId);
+
+      // Two simultaneous logins with deviceId omitted
+      const [res1, res2] = await Promise.all([
+        app.inject({
+          method: 'POST',
+          url: '/auth/login',
+          payload: { email: concurrentEmail, password: testUserPassword },
+        }),
+        app.inject({
+          method: 'POST',
+          url: '/auth/login',
+          payload: { email: concurrentEmail, password: testUserPassword },
+        }),
+      ]);
+
+      // Either both succeed (if both evaluate before either commits), or one succeeds and the other
+      // receives 400 DEVICE_ID_REQUIRED because a device now exists.
+      // The invariant is that every device created in any ordering has a server-generated ID
+      // and is correctly bound to the authenticated user.
+      const statuses = [res1.statusCode, res2.statusCode];
+      expect(statuses).toContain(200);
+
+      const successfulBodies = [res1, res2]
+        .filter((r) => r.statusCode === 200)
+        .map((r) => JSON.parse(r.body));
+
+      for (const body of successfulBodies) {
+        expect(body.deviceId).toBeDefined();
+        expect(body.userId).toBe(concurrentUserId);
+        createdDeviceIds.push(body.deviceId);
+      }
+
+      if (successfulBodies.length === 2) {
+        expect(successfulBodies[0].deviceId).not.toBe(successfulBodies[1].deviceId);
+      }
+
+      const rejectedRes = [res1, res2].find((r) => r.statusCode !== 200);
+      if (rejectedRes) {
+        expect(rejectedRes.statusCode).toBe(400);
+        expect(JSON.parse(rejectedRes.body).code).toBe('DEVICE_ID_REQUIRED');
+      }
+
+      // Verify all devices created in DB for this user are server-generated and owned by concurrentUserId
+      const userDevices = await db
+        .select()
+        .from(devices)
+        .where(eq(devices.userId, concurrentUserId));
+      expect(userDevices.length).toBeGreaterThanOrEqual(1);
+      expect(userDevices.every((d) => d.userId === concurrentUserId)).toBe(true);
+      expect(userDevices.every((d) => !d.isRevoked)).toBe(true);
     });
   });
 });

@@ -1,27 +1,24 @@
 /**
  * POST /auth/login
  *
- * Authenticates a user with email + password, creates a session and issues:
- *   - A short-lived JWT access token  (15 min by default)
- *   - A long-lived opaque refresh token (30 days by default)
+ * Authenticates a user with email + password, supporting two paths:
+ *   1. Existing-device login: client provides `deviceId`. Verifies device ownership
+ *      and revocation; issues session + tokens.
+ *   2. First-device auto-provisioning: `deviceId` is omitted for a brand-new user
+ *      with zero registered devices. Atomically creates a server-generated device,
+ *      session, and refresh token in a single database transaction. If the user
+ *      already has registered devices, `deviceId` is strictly required.
  *
  * Security decisions:
- * - The user is identified by email; the password is verified with Argon2id.
+ * - The user is identified by email; password is verified with Argon2id before any DB transaction.
  * - Generic error message ("Invalid email or password") for both missing user
  *   and wrong password — avoids user enumeration.
- * - Session is scoped to a specific (user, device) pair.
- *   The `deviceId` in the request body MUST match a device already registered
- *   in the `devices` table and owned by the authenticated user.
- * - Refresh token is returned in the response body (to be stored by the client
- *   in secure device storage, not localStorage).  Phase 2 will add HttpOnly
- *   cookie support for web clients.
- * - On each login a new session + refresh token are created; old sessions from
- *   the same device are NOT automatically revoked here (handled by Phase 2
- *   token rotation / session management).
- *
- * Deferred:
- * - Rate limiting / account lockout (Phase 2)
- * - Trusted device fingerprinting (Phase 3)
+ * - `deviceId` is NEVER a creation authority: supplying an unknown or unowned `deviceId`
+ *   is rejected with 400 DEVICE_NOT_FOUND. Only omission of `deviceId` triggers auto-provisioning.
+ * - `userId` is never accepted from the client anywhere in this flow; it is derived
+ *   exclusively from the authenticated user.
+ * - Server-generated UUIDs are authoritative for all created devices and sessions.
+ * - Device + session + refresh-token creation is wrapped in an atomic database transaction.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -39,11 +36,10 @@ const loginBodySchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
   /**
-   * The caller's pre-registered device UUID.
-   * This must match a device row owned by the authenticated user.
-   * For the dev seed, the well-known IDs from bin.ts apply.
+   * Optional for brand-new users with zero registered devices (triggers auto-provisioning).
+   * Strictly required once at least one device exists for the account.
    */
-  deviceId: z.string().uuid(),
+  deviceId: z.string().uuid().optional(),
 });
 
 export type LoginBody = z.infer<typeof loginBodySchema>;
@@ -97,7 +93,7 @@ export function registerLoginRoute(
       });
     }
 
-    // 4. Verify password (Argon2id — timing-safe)
+    // 4. Verify password (Argon2id — timing-safe, outside transaction)
     const passwordValid = await verifyPassword(password, user.passwordHash);
     if (!passwordValid) {
       return reply.status(401).send({
@@ -107,68 +103,133 @@ export function registerLoginRoute(
       });
     }
 
-    // 5. Verify device belongs to this user and is not revoked
-    const [device] = await db
-      .select({ id: devices.id, isRevoked: devices.isRevoked })
-      .from(devices)
-      .where(and(eq(devices.id, deviceId), eq(devices.userId, user.id)))
-      .limit(1);
-
-    if (!device) {
-      return reply.status(400).send({
-        error: 'Bad Request',
-        code: 'DEVICE_NOT_FOUND',
-        message: 'The specified deviceId is not registered to this account.',
-      });
-    }
-
-    if (device.isRevoked) {
-      return reply.status(403).send({
-        error: 'Forbidden',
-        code: 'DEVICE_REVOKED',
-        message: 'This device has been revoked.',
-      });
-    }
-
-    // 6. Create session
     const sessionId = uuidv4();
+    const rawRefreshToken = generateRefreshToken();
+    const tokenHash = hashRefreshToken(rawRefreshToken);
     const sessionExpiresAt = new Date(
       Date.now() + config.refreshTokenTtlDays * 24 * 60 * 60 * 1000
     ).toISOString();
 
-    await db.insert(sessions).values({
-      id: sessionId,
-      userId: user.id,
-      deviceId: device.id,
-      isRevoked: false,
-      expiresAt: sessionExpiresAt,
-    });
+    let effectiveDeviceId: string;
 
-    // 7. Issue refresh token (raw returned to client; hash stored in DB)
-    const rawRefreshToken = generateRefreshToken();
-    const tokenHash = hashRefreshToken(rawRefreshToken);
-    const refreshTokenExpiresAt = sessionExpiresAt; // refresh token mirrors session lifetime
+    if (deviceId) {
+      // ─────────────────────────────────────────────────────────────
+      // PATH 1: Existing-device login
+      // ─────────────────────────────────────────────────────────────
 
-    await db.insert(refreshTokens).values({
-      id: uuidv4(),
-      sessionId,
-      userId: user.id,
-      tokenHash,
-      isRevoked: false,
-      expiresAt: refreshTokenExpiresAt,
-    });
+      // Verify device belongs to this user and is not revoked
+      const [device] = await db
+        .select({ id: devices.id, isRevoked: devices.isRevoked })
+        .from(devices)
+        .where(and(eq(devices.id, deviceId), eq(devices.userId, user.id)))
+        .limit(1);
 
-    // 8. Sign access token
+      if (!device) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          code: 'DEVICE_NOT_FOUND',
+          message: 'The specified deviceId is not registered to this account.',
+        });
+      }
+
+      if (device.isRevoked) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          code: 'DEVICE_REVOKED',
+          message: 'This device has been revoked.',
+        });
+      }
+
+      // Atomic session + refresh token creation + lastSeenAt update
+      await db.transaction(async (tx) => {
+        await tx.insert(sessions).values({
+          id: sessionId,
+          userId: user.id,
+          deviceId: device.id,
+          isRevoked: false,
+          expiresAt: sessionExpiresAt,
+        });
+
+        await tx.insert(refreshTokens).values({
+          id: uuidv4(),
+          sessionId,
+          userId: user.id,
+          tokenHash,
+          isRevoked: false,
+          expiresAt: sessionExpiresAt,
+        });
+
+        await tx
+          .update(devices)
+          .set({ lastSeenAt: new Date().toISOString() })
+          .where(eq(devices.id, device.id));
+      });
+
+      effectiveDeviceId = device.id;
+    } else {
+      // ─────────────────────────────────────────────────────────────
+      // PATH 2: First/New-device auto-provisioning
+      // ─────────────────────────────────────────────────────────────
+
+      // Reject if user already has at least one registered device
+      const existingDevices = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.userId, user.id))
+        .limit(1);
+
+      if (existingDevices.length > 0) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          code: 'DEVICE_ID_REQUIRED',
+          message: 'deviceId is required when devices are already registered to this account.',
+        });
+      }
+
+      // Generate device ID server-side
+      const newDeviceId = uuidv4();
+      const now = new Date().toISOString();
+
+      // ONE atomic transaction: device creation + session creation + refresh-token creation
+      await db.transaction(async (tx) => {
+        await tx.insert(devices).values({
+          id: newDeviceId,
+          userId: user.id, // Strictly derived from authenticated user
+          deviceIdentifier: `dev-${uuidv4()}`,
+          name: 'Initial Device',
+          platform: 'WEB',
+          isRevoked: false,
+          lastSeenAt: now,
+          lastRevalidatedAt: now,
+          offlineAuthWindowDays: 7,
+        });
+
+        await tx.insert(sessions).values({
+          id: sessionId,
+          userId: user.id,
+          deviceId: newDeviceId,
+          isRevoked: false,
+          expiresAt: sessionExpiresAt,
+        });
+
+        await tx.insert(refreshTokens).values({
+          id: uuidv4(),
+          sessionId,
+          userId: user.id,
+          tokenHash,
+          isRevoked: false,
+          expiresAt: sessionExpiresAt,
+        });
+      });
+
+      effectiveDeviceId = newDeviceId;
+    }
+
+    // Sign JWT access token with bound deviceId and sid
     const accessToken = await signAccessToken(
-      { sub: user.id, deviceId: device.id, sid: sessionId },
+      { sub: user.id, deviceId: effectiveDeviceId, sid: sessionId },
       config
     );
-
-    // 9. Update device lastSeenAt
-    await db
-      .update(devices)
-      .set({ lastSeenAt: new Date().toISOString() })
-      .where(eq(devices.id, device.id));
 
     const response: LoginResponse = {
       accessToken,
@@ -176,7 +237,7 @@ export function registerLoginRoute(
       expiresIn: config.accessTokenTtlSeconds,
       tokenType: 'Bearer',
       userId: user.id,
-      deviceId: device.id,
+      deviceId: effectiveDeviceId,
       sessionId,
     };
 
