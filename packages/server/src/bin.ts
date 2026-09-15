@@ -7,22 +7,6 @@ const connectionString =
   process.env.DATABASE_URL ||
   'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
 
-/**
- * Development-only: ensure JWT_SECRET is set.
- * In production this is enforced by loadAuthConfig() inside createServer(),
- * but for local dev we set a default so the server starts without manual env setup.
- */
-if (!process.env.JWT_SECRET) {
-  // WARNING: Do NOT use this default in production.
-  // Set a real random secret in your .env file (see .env.example).
-  process.env.JWT_SECRET =
-    'fieldcore-dev-jwt-secret-change-this-in-production-32ch';
-  console.warn(
-    '[bin] JWT_SECRET not set — using insecure development default. ' +
-      'Set JWT_SECRET in your environment for production.'
-  );
-}
-
 const { db } = createDatabaseClient(connectionString);
 
 /**
