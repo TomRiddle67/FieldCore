@@ -1,8 +1,8 @@
 /**
  * Password hashing and verification using Argon2id.
  *
- * Argon2id is the OWASP-recommended variant — it provides resistance to both
- * side-channel attacks (Argon2i) and GPU/ASIC attacks (Argon2d).
+ * Argon2id is memory-hard and substantially increases the cost of GPU/parallel password-cracking
+ * attacks, while providing stronger side-channel resistance characteristics than Argon2d.
  *
  * Security decisions:
  * - Variant: argon2id (OWASP ASVS L2+ recommendation)
