@@ -9,6 +9,7 @@ import {
   doublePrecision,
   jsonb,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type { GPSMetadata } from '@fieldcore/types';
 
@@ -20,6 +21,13 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }).notNull().unique(),
   name: varchar('name', { length: 255 }).notNull(),
   role: varchar('role', { length: 50 }).notNull(), // 'ADMIN' | 'SUPERVISOR' | 'GEOLOGIST' | 'OPERATOR'
+  /**
+   * Argon2id PHC string. Nullable so that existing seed rows survive the migration without
+   * destructive data loss. The application layer enforces a non-null password_hash before
+   * allowing login — a user with null password_hash cannot authenticate.
+   * The seed script always inserts users with a valid hash.
+   */
+  passwordHash: text('password_hash'),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
 });
@@ -49,6 +57,69 @@ export const devices = pgTable(
   (table) => [
     index('devices_user_id_idx').on(table.userId),
     index('devices_is_revoked_idx').on(table.isRevoked),
+  ]
+);
+
+/**
+ * Sessions table
+ *
+ * A session is created on successful login and destroyed on logout or expiry.
+ * The deviceId ties a session to the specific device that authenticated.
+ * Sessions support future per-session revocation without requiring a global
+ * token refresh.
+ */
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    isRevoked: boolean('is_revoked').notNull().default(false),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'string' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('sessions_user_id_idx').on(table.userId),
+    index('sessions_device_id_idx').on(table.deviceId),
+    index('sessions_is_revoked_idx').on(table.isRevoked),
+  ]
+);
+
+/**
+ * Refresh tokens table
+ *
+ * Only the SHA-256 hash of the raw token is stored — the raw token is returned
+ * to the client exactly once at issuance and is not derivable from this record.
+ * Token rotation (Phase 2) will add a `replacedByTokenHash` column.
+ */
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** SHA-256 hex hash of the opaque raw token. */
+    tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+    isRevoked: boolean('is_revoked').notNull().default(false),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'string' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('refresh_tokens_token_hash_unique').on(table.tokenHash),
+    index('refresh_tokens_session_id_idx').on(table.sessionId),
+    index('refresh_tokens_user_id_idx').on(table.userId),
+    index('refresh_tokens_is_revoked_idx').on(table.isRevoked),
   ]
 );
 

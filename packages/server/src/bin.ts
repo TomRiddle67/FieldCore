@@ -1,6 +1,7 @@
 import { createServer } from './server.js';
 import { createDatabaseClient, users, devices } from '@fieldcore/database';
 import { eq } from 'drizzle-orm';
+import { hashPassword } from './auth/password.js';
 
 const connectionString =
   process.env.DATABASE_URL ||
@@ -8,16 +9,38 @@ const connectionString =
 
 const { db } = createDatabaseClient(connectionString);
 
+/**
+ * Seeds the development database with a default user (if absent) and three
+ * well-known devices (Device A, Device B, Default).
+ *
+ * The default user is seeded with a hashed password so login works out of the
+ * box for local development:
+ *   email:    engineer@fieldcore.io
+ *   password: fieldcore-dev-password
+ */
 async function seedDevDevices() {
   const defaultUserId = '11111111-1111-4111-8111-111111111111';
+  const devPassword = 'fieldcore-dev-password';
+
   const existingUser = await db.select().from(users).where(eq(users.id, defaultUserId));
   if (existingUser.length === 0) {
+    const passwordHash = await hashPassword(devPassword);
     await db.insert(users).values({
       id: defaultUserId,
       email: 'engineer@fieldcore.io',
       name: 'Field Operations Engineer',
       role: 'GEOLOGIST',
+      passwordHash,
     });
+    console.log('[bin] Seeded dev user: engineer@fieldcore.io / fieldcore-dev-password');
+  } else if (!existingUser[0].passwordHash) {
+    // Backfill password_hash for rows created before this migration
+    const passwordHash = await hashPassword(devPassword);
+    await db
+      .update(users)
+      .set({ passwordHash })
+      .where(eq(users.id, defaultUserId));
+    console.log('[bin] Backfilled password_hash for dev user');
   }
 
   const devDevices = [
