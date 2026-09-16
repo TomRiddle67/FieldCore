@@ -325,29 +325,12 @@ The following are **not implemented** in Phase 1 and are explicitly deferred:
 ## 7. Development Workflow
 
 ```
-GitHub Issue
-    ↓
-Feature branch  (e.g. feat/25-auth-infrastructure)
-    ↓
-Implementation + tests
-    ↓
-Commit + push
-    ↓
-Pull Request (PR)
-    ↓
-Human review
-  — diff verification (git diff --stat main...branch)
-  — scope verification (protected files unchanged)
-  — code review (security invariants, test coverage)
-  — test suite passes (pnpm test)
-    ↓
-Merge (human merge gate — never automated)
-    ↓
-Post-merge verification
-  — git checkout main && git pull
-  — pnpm test (confirm baseline)
-    ↓
-Baseline recorded
+FieldCore uses an issue-driven Git workflow:
+
+**GitHub Issue → Feature Branch → Implementation & Tests → Pull Request → Review → Merge → Post-Merge Verification**
+
+Changes are developed on dedicated branches and merged into `main` through pull requests after the relevant tests and reviews pass.
+
 ```
 
 ### Completed Milestones
