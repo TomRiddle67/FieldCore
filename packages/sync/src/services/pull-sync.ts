@@ -88,6 +88,7 @@ export class PullSyncService {
       deviceId: options.deviceId ?? '00000000-0000-0000-0000-000000000000',
       afterSequence: currentCursor,
       limit,
+      scope,
     };
 
     let response: PullResponse;

@@ -33,17 +33,6 @@ export interface SyncContextValue {
 
 const SyncContext = createContext<SyncContextValue | null>(null);
 
-function getOrCreateStorageId(key: string, defaultVal: string): string {
-  try {
-    const stored = localStorage.getItem(key);
-    if (stored) return stored;
-    localStorage.setItem(key, defaultVal);
-    return defaultVal;
-  } catch {
-    return defaultVal;
-  }
-}
-
 export function SyncProvider({
   children,
   forcedDb,

@@ -26,6 +26,7 @@ export const changeLog = pgTable(
     sequence: bigserial('sequence', { mode: 'bigint' }).primaryKey(),
     entityType: varchar('entity_type', { length: 50 }).notNull().$type<EntityType>(),
     entityId: uuid('entity_id').notNull(),
+    projectId: uuid('project_id'),
     version: integer('version').notNull(),
     operationType: varchar('operation_type', { length: 50 }).notNull().$type<SyncOperationType>(),
     payload: jsonb('payload').notNull().$type<Record<string, unknown>>(),
@@ -39,6 +40,7 @@ export const changeLog = pgTable(
     index('change_log_sequence_idx').on(table.sequence),
     index('change_log_entity_idx').on(table.entityType, table.entityId),
     index('change_log_operation_id_idx').on(table.operationId),
+    index('change_log_project_id_seq_idx').on(table.projectId, table.sequence),
   ]
 );
 

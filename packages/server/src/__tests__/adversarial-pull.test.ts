@@ -8,6 +8,7 @@ import {
   users,
   devices,
   projects,
+  projectMembers,
   changeLog,
   idempotencyRecords,
   conflicts,
@@ -22,6 +23,8 @@ import {
   type PullTransport,
 } from '@fieldcore/sync';
 import { createServer } from '../server.js';
+import { loadAuthConfig } from '../auth/config.js';
+import { signAccessToken } from '../auth/jwt.js';
 import type {
   PushRequest,
   PushResponse,
@@ -33,6 +36,7 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
   const dbUrl = 'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
   const { db, client } = createDatabaseClient(dbUrl);
   const app = createServer({ db });
+  const authConfig = loadAuthConfig(process.env);
 
   let dexieDb: FieldCoreDexie;
   let pushService: PushSyncService;
@@ -44,6 +48,9 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
   const peerUserId = randomUUID();
   const peerDeviceId = randomUUID();
   const testClientId = 'adversarial-pull-client-1';
+
+  let testUserAuthToken: string;
+  let peerUserAuthToken: string;
 
   async function getLatestServerSequence(): Promise<string> {
     const rows = await db
@@ -92,6 +99,15 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
         offlineAuthWindowDays: 7,
       },
     ]);
+
+    testUserAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: testDeviceId, sid: randomUUID() },
+      authConfig
+    );
+    peerUserAuthToken = await signAccessToken(
+      { sub: peerUserId, deviceId: peerDeviceId, sid: randomUUID() },
+      authConfig
+    );
   });
 
   afterAll(async () => {
@@ -112,18 +128,16 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
   });
 
   afterEach(async () => {
-    // Only clean up the client-side Dexie instance.
-    // Postgres cleanup is intentionally NOT done here — Vitest runs test files in parallel,
-    // and deleting shared Postgres tables mid-run would corrupt concurrent adversarial-push tests.
     await dexieDb.delete();
   });
 
   // End-to-end transport adapter connecting PullSyncService directly to Fastify GET /sync/pull
-  const createFastifyPullTransport = (): PullTransport => {
+  const createFastifyPullTransport = (token = testUserAuthToken): PullTransport => {
     return async (req: PullRequest): Promise<PullResponse> => {
       const httpRes = await app.inject({
         method: 'GET',
         url: `/sync/pull?deviceId=${req.deviceId}&afterSequence=${req.afterSequence}&limit=${req.limit ?? 100}`,
+        headers: { authorization: `Bearer ${token}` },
       });
 
       expect(httpRes.statusCode).toBe(200);
@@ -132,11 +146,12 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
   };
 
   // End-to-end transport adapter connecting PushSyncService directly to Fastify POST /sync/push
-  const createFastifyPushTransport = (): PushTransport => {
+  const createFastifyPushTransport = (token = testUserAuthToken): PushTransport => {
     return async (req: PushRequest): Promise<PushResponse> => {
       const httpRes = await app.inject({
         method: 'POST',
         url: '/sync/push',
+        headers: { authorization: `Bearer ${token}` },
         payload: req,
       });
 
@@ -169,32 +184,39 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
 
     const pullTransport = createFastifyPullTransport();
 
-    // 3. Simulate crash right before cursor write commit inside Dexie transaction
+    // 3. Inject synthetic failure: intercept table.put on pull_cursors to simulate crash
     const originalPut = dexieDb.pull_cursors.put.bind(dexieDb.pull_cursors);
-    vi.spyOn(dexieDb.pull_cursors, 'put').mockImplementation((() => {
-      throw new Error('Simulated process kill right before cursor write');
+    let crashInjected = false;
+    vi.spyOn(dexieDb.pull_cursors, 'put').mockImplementation((async (record: any) => {
+      if (!crashInjected) {
+        crashInjected = true;
+        throw new Error('SIMULATED CRASH: Power loss immediately after applying changes');
+      }
+      return originalPut(record);
     }) as any);
 
-    await expect(
-      pullService.pullBatch(pullTransport, { deviceId: testDeviceId })
-    ).rejects.toThrow('Simulated process kill right before cursor write');
+    // 4. First pull attempt crashes inside atomic transaction
+    await expect(pullService.pullBatch(pullTransport, { deviceId: testDeviceId })).rejects.toThrow(
+      'SIMULATED CRASH'
+    );
 
-    // Verify atomic rollback: cursor stays at startSeq, no projects were committed in Dexie
-    const cursorAfterCrash = await pullService.getLocalCursor();
-    expect(cursorAfterCrash).toBe(startSeq);
+    // INVARIANT CHECK: Dexie transaction rolled back entirely
+    const rolledBackCursor = await pullService.getLocalCursor();
+    expect(rolledBackCursor).toBe(startSeq); // Cursor was NOT advanced
 
-    const projectsAfterCrash = await dexieDb.projects.toArray();
-    expect(projectsAfterCrash).toHaveLength(0);
+    const p1RolledBack = await dexieDb.projects.get(p1.id);
+    const p2RolledBack = await dexieDb.projects.get(p2.id);
+    expect(p1RolledBack).toBeUndefined(); // Zero domain records survived crash
+    expect(p2RolledBack).toBeUndefined();
 
-    // 4. Restore normal cursor put behavior and re-pull
+    // 5. Restore un-faulted put and execute normal recovery pull
     vi.restoreAllMocks();
 
-    const rePullResult = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
-    // >= 2 because parallel test files may have added extra change_log rows between startSeq capture
-    // and this pull. The real zero-duplicate proof is the per-ID assertions below.
-    expect(rePullResult.changesApplied).toBeGreaterThanOrEqual(2);
+    const recoveryPull = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
+    expect(recoveryPull.changesApplied).toBeGreaterThanOrEqual(2);
+    expect(BigInt(recoveryPull.latestSequence)).toBeGreaterThan(BigInt(startSeq));
 
-    // Verify zero duplicates and exact version
+    // INVARIANT CHECK: Records applied cleanly, zero duplicates
     const p1InDexie = await dexieDb.projects.get(p1.id);
     const p2InDexie = await dexieDb.projects.get(p2.id);
     expect(p1InDexie).toBeDefined();
@@ -209,11 +231,6 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
       updatedAt: new Date().toISOString(),
     });
     const idempotentPull = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
-    // p1 and p2 are at version 1 — version-compare skips re-delivery for them.
-    // Other entities pulled on the first re-pull are also already at their latest version.
-    // In any case, the strict invariant is checked via the per-ID duplicate guard below.
-    // We can't assert exactly 0 because other parallel tests may have new rows above startSeq
-    // that weren't pulled in the first batch (limit default 100). Checking p1 duplicate-free is sufficient.
     expect(idempotentPull.changesApplied).toBeGreaterThanOrEqual(0);
 
     // Count is strictly 1 per entityId
@@ -226,8 +243,24 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
     const pullTransport = createFastifyPullTransport();
     const baseSeq = await getLatestServerSequence();
 
-    // 2. Seed 250 distinct change_log entries in Postgres
+    // Seed shared project in Postgres and authorize testUserId
+    const drainProjectId = randomUUID();
     const nowIso = new Date().toISOString();
+    await db.insert(projects).values({
+      id: drainProjectId,
+      name: 'Drain Parent Project',
+      code: `DRAIN-${randomUUID().slice(0, 6)}`,
+      status: 'ACTIVE',
+      version: 1,
+    });
+    await db.insert(projectMembers).values({
+      id: randomUUID(),
+      projectId: drainProjectId,
+      userId: testUserId,
+      role: 'MEMBER',
+    });
+
+    // 2. Seed 250 distinct change_log entries in Postgres authorized under drainProjectId
     const insertedIds: string[] = [];
 
     for (let i = 0; i < 250; i++) {
@@ -236,6 +269,7 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
       await db.insert(changeLog).values({
         entityType: 'PROJECT',
         entityId: id,
+        projectId: drainProjectId,
         version: 1,
         operationType: 'CREATE',
         payload: {
@@ -264,9 +298,6 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
       limit: 100,
     });
 
-    // At least 3 pages needed for 250 seeded rows (100+100+50), possibly more if parallel tests
-    // added rows to changeLog between baseSeq capture and drain. That's fine — the real proof
-    // is that all 250 specific IDs land in Dexie and the cursor advances to the end.
     expect(drainResult.pagesPulled).toBeGreaterThanOrEqual(3);
     expect(drainResult.totalApplied).toBeGreaterThanOrEqual(250);
 
@@ -279,7 +310,7 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
       expect(row).toBeDefined();
       expect(row?.name).toBe(`Long Offline Project ${i}`);
     }
-  }, 30_000); // 250 inserts + 3-page drain against real Postgres requires extended timeout
+  }, 30_000);
 
   it('3. baseVersion isolation: push CREATE (v1), server peer bumps to v2, client pulls, client queued UPDATE (baseVersion=1) pushes and detects CONFLICT', async () => {
     // 1. Client creates project offline at version 1
@@ -292,9 +323,17 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
     const pushTransport = createFastifyPushTransport();
     const pullTransport = createFastifyPullTransport();
 
-    // 2. Initial push succeeds -> server project is at version 1
+    // 2. Initial push succeeds -> server project is at version 1 (and testUserId is enrolled in project_members)
     const initialPush = await pushService.pushBatch(pushTransport);
     expect(initialPush.appliedCount).toBe(1);
+
+    // Also authorize peer in project_members so peer can update it
+    await db.insert(projectMembers).values({
+      id: randomUUID(),
+      projectId: project.id,
+      userId: peerUserId,
+      role: 'MEMBER',
+    });
 
     // Advance client pull cursor to match initial state
     const afterPushSeq = await getLatestServerSequence();
@@ -333,6 +372,7 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
     await db.insert(changeLog).values({
       entityType: 'PROJECT',
       entityId: project.id,
+      projectId: project.id,
       version: 2,
       operationType: 'UPDATE',
       payload: { id: project.id, name: 'Peer Remote Edit' },
@@ -345,7 +385,6 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
 
     // 5. Client performs a pull sync while the local UPDATE is still pending in push queue
     const pullResult = await pullService.pullBatch(pullTransport, { deviceId: testDeviceId });
-    // Local version was 2, incoming server version was 2 -> skipped (2 >= 2)
     expect(pullResult.changesApplied).toBe(0);
 
     // CRITICAL INVARIANT: Stored baseVersion on the queued SyncOperation is untouched
@@ -447,11 +486,19 @@ describe('Stage 4 Adversarial Pull Sync Suite', () => {
       updatedAt: peerNow,
     });
 
+    await db.insert(projectMembers).values({
+      id: randomUUID(),
+      projectId,
+      userId: testUserId,
+      role: 'MEMBER',
+    });
+
     await db
       .insert(changeLog)
       .values({
         entityType: 'PROJECT',
         entityId: projectId,
+        projectId,
         version: 2,
         operationType: 'DELETE',
         payload: { id: projectId, isDeleted: true, deletedAt: peerNow },

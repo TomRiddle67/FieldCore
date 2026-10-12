@@ -21,7 +21,7 @@ import type { FastifyRequest, FastifyReply, preHandlerHookHandler } from 'fastif
 import { verifyAccessToken, type VerifiedAccessToken } from './jwt.js';
 import type { AuthConfig } from './config.js';
 import type { Database } from '@fieldcore/database';
-import { devices } from '@fieldcore/database';
+import { devices, sessions } from '@fieldcore/database';
 import { eq } from 'drizzle-orm';
 
 // ---------- Module augmentation — adds `auth` to FastifyRequest ----------
@@ -104,7 +104,24 @@ export function requireAuth(
       });
     }
 
-    // 4. Attach verified claims to request
+    // 4. Check live session revocation in DB
+    if (claims.sid) {
+      const [session] = await db
+        .select({ id: sessions.id, isRevoked: sessions.isRevoked })
+        .from(sessions)
+        .where(eq(sessions.id, claims.sid))
+        .limit(1);
+
+      if (session && session.isRevoked) {
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'SESSION_REVOKED',
+          message: 'This session has been revoked. Please log in again.',
+        });
+      }
+    }
+
+    // 5. Attach verified claims to request
     request.auth = claims;
   };
 }

@@ -206,6 +206,7 @@ export const pushOperationStatusSchema = z.enum([
   'REJECTED',
   'REQUIRES_REVALIDATION',
   'DEVICE_REVOKED',
+  'UNAUTHORIZED',
 ]);
 
 /**
@@ -239,4 +240,5 @@ export const pullRequestSchema = z.object({
     z.string().regex(/^\d+$/, 'afterSequence must be a non-negative integer string'),
   ]),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  scope: z.string().min(1).optional(),
 });

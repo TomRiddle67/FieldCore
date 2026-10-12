@@ -6,11 +6,13 @@ import { processPushRequest } from './push-handler.js';
 import { processPullRequest, DeviceRevokedError } from './pull-handler.js';
 import {
   loadAuthConfig,
+  requireAuth,
   registerLoginRoute,
   registerRefreshRoute,
   registerLogoutRoute,
   registerDeviceRoute,
 } from './auth/index.js';
+import { registerProjectMemberRoutes } from './project-members.js';
 
 export interface ServerOptions {
   db: Database;
@@ -26,7 +28,7 @@ export interface ServerOptions {
  *   POST /auth/logout           — revoke current session (requires Bearer token)
  *   POST /auth/devices/register — register new device (requires Bearer token)
  *
- * Sync routes (currently unauthenticated — Phase 2 will add requireAuth):
+ * Sync routes (protected with requireAuth Bearer JWT):
  *   POST /sync/push
  *   GET  /sync/pull
  */
@@ -50,76 +52,85 @@ export function createServer({ db, logger = false }: ServerOptions): FastifyInst
   registerRefreshRoute(app, db, authConfig);
   registerLogoutRoute(app, db, authConfig);
   registerDeviceRoute(app, db, authConfig);
+  registerProjectMemberRoutes(app, db, authConfig);
 
   // ---------- Sync routes ----------
 
   /**
    * Batched Push Synchronization Route.
    * Processes up to 25 operations independently with per-operation transaction isolation.
+   * Requires Bearer JWT authentication.
    * Returns HTTP 200 for all structurally valid requests, carrying per-operation outcomes.
    * HTTP 4xx/5xx are strictly reserved for request-level failures.
-   *
-   * TODO(auth-phase-2): add preHandler: requireAuth(authConfig, db)
    */
-  app.post('/sync/push', async (request, reply) => {
-    const parseResult = pushRequestSchema.safeParse(request.body);
-    if (!parseResult.success) {
-      return reply.status(400).send({
-        error: 'Validation failed',
-        details: parseResult.error.errors,
-      });
-    }
+  app.post(
+    '/sync/push',
+    { preHandler: requireAuth(authConfig, db) },
+    async (request, reply) => {
+      const parseResult = pushRequestSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'Validation failed',
+          details: parseResult.error.errors,
+        });
+      }
 
-    try {
-      const response = await processPushRequest({
-        db,
-        request: parseResult.data,
-      });
-      return reply.status(200).send(response);
-    } catch (err: any) {
-      return reply.status(500).send({
-        error: 'Internal server error during sync push processing',
-        message: err?.message,
-      });
+      try {
+        const response = await processPushRequest({
+          db,
+          request: parseResult.data,
+          authContext: request.auth,
+        });
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        return reply.status(500).send({
+          error: 'Internal server error during sync push processing',
+          message: err?.message,
+        });
+      }
     }
-  });
+  );
 
   /**
    * Pull Synchronization Route.
    * Fetches monotonic change_log entries strictly ascending from afterSequence.
+   * Requires Bearer JWT authentication.
    * Device revocation returns HTTP 403.
    * Expired offline window returns HTTP 200 with cursorExpired: true.
-   *
-   * TODO(auth-phase-2): add preHandler: requireAuth(authConfig, db)
    */
-  app.get('/sync/pull', async (request, reply) => {
-    const parseResult = pullRequestSchema.safeParse(request.query);
-    if (!parseResult.success) {
-      return reply.status(400).send({
-        error: 'Validation failed',
-        details: parseResult.error.errors,
-      });
-    }
-
-    try {
-      const response = await processPullRequest({
-        db,
-        request: parseResult.data,
-      });
-      return reply.status(200).send(response);
-    } catch (err: any) {
-      if (err instanceof DeviceRevokedError || err?.code === 'DEVICE_REVOKED') {
-        return reply.status(403).send({
-          error: err.message,
-          code: 'DEVICE_REVOKED',
+  app.get(
+    '/sync/pull',
+    { preHandler: requireAuth(authConfig, db) },
+    async (request, reply) => {
+      const parseResult = pullRequestSchema.safeParse(request.query);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'Validation failed',
+          details: parseResult.error.errors,
         });
       }
-      return reply.status(500).send({
-        error: 'Internal server error during sync pull processing',
-        message: err?.message,
-      });
+
+      try {
+        const response = await processPullRequest({
+          db,
+          request: parseResult.data,
+          authContext: request.auth,
+        });
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof DeviceRevokedError || err?.code === 'DEVICE_REVOKED') {
+          return reply.status(403).send({
+            error: err.message,
+            code: 'DEVICE_REVOKED',
+          });
+        }
+        return reply.status(500).send({
+          error: 'Internal server error during sync pull processing',
+          message: err?.message,
+        });
+      }
     }
-  });
+  );
 
   return app;
 }

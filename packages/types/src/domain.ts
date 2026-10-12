@@ -161,3 +161,15 @@ export interface EntityTypeMap {
   INSPECTION: Inspection;
   MEASUREMENT: Measurement;
 }
+
+/**
+ * Explicit project membership record.
+ */
+export interface ProjectMember {
+  id: string; // UUIDv4
+  projectId: string; // Foreign key to projects.id
+  userId: string; // Foreign key to users.id
+  role: string; // e.g. 'OWNER' | 'MEMBER' | 'ADMIN'
+  createdAt: string;
+}
+

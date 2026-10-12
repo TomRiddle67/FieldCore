@@ -147,6 +147,29 @@ export const projects = pgTable(
 );
 
 /**
+ * Project members table
+ */
+export const projectMembers = pgTable(
+  'project_members',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: varchar('role', { length: 50 }).notNull().default('MEMBER'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('project_members_project_user_unique').on(table.projectId, table.userId),
+    index('project_members_user_id_idx').on(table.userId),
+    index('project_members_project_id_idx').on(table.projectId),
+  ]
+);
+
+/**
  * Sites table
  */
 export const sites = pgTable(

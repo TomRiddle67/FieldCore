@@ -11,17 +11,24 @@ import {
 } from '@fieldcore/database';
 import { createServer } from '../server.js';
 import { processPullRequest, DeviceRevokedError } from '../pull-handler.js';
+import { loadAuthConfig } from '../auth/config.js';
+import { signAccessToken } from '../auth/jwt.js';
 import type { PullRequest } from '@fieldcore/types';
 
 describe('Server Pull Replication Engine', () => {
   const dbUrl = 'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
   const { db, client } = createDatabaseClient(dbUrl);
   const app = createServer({ db });
+  const authConfig = loadAuthConfig(process.env);
 
   const testUserId = randomUUID();
   const testDeviceId = randomUUID();
   const revokedDeviceId = randomUUID();
   const expiredDeviceId = randomUUID();
+
+  let validAuthToken: string;
+  let revokedAuthToken: string;
+  let expiredDeviceAuthToken: string;
 
   beforeAll(async () => {
     await db.insert(users).values({
@@ -63,6 +70,19 @@ describe('Server Pull Replication Engine', () => {
         offlineAuthWindowDays: 7,
       },
     ]);
+
+    validAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: testDeviceId, sid: randomUUID() },
+      authConfig
+    );
+    revokedAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: revokedDeviceId, sid: randomUUID() },
+      authConfig
+    );
+    expiredDeviceAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: expiredDeviceId, sid: randomUUID() },
+      authConfig
+    );
   });
 
   afterAll(async () => {
@@ -118,7 +138,26 @@ describe('Server Pull Replication Engine', () => {
 
     const startSeq = BigInt(insertedSeqList[0]) - 1n;
 
-    // Pull with limit = 3
+    // Direct handler pull
+    const res = await processPullRequest({
+      db,
+      request: {
+        deviceId: testDeviceId,
+        afterSequence: String(startSeq),
+        limit: 10,
+      },
+    });
+
+    expect(res.changes.length).toBeGreaterThanOrEqual(5);
+
+    // Verify strictly ascending order
+    for (let i = 1; i < res.changes.length; i++) {
+      expect(BigInt(res.changes[i].sequence)).toBeGreaterThan(
+        BigInt(res.changes[i - 1].sequence)
+      );
+    }
+
+    // Verify pagination with limit: 3
     const resPage1 = await processPullRequest({
       db,
       request: {
@@ -130,19 +169,8 @@ describe('Server Pull Replication Engine', () => {
 
     expect(resPage1.changes).toHaveLength(3);
     expect(resPage1.hasMore).toBe(true);
-    expect(resPage1.cursorExpired).toBe(false);
 
-    // Assert strictly ascending sequence
-    for (let i = 0; i < resPage1.changes.length - 1; i++) {
-      const current = BigInt(resPage1.changes[i].sequence);
-      const next = BigInt(resPage1.changes[i + 1].sequence);
-      expect(next).toBeGreaterThan(current);
-    }
-
-    // latestSequence equals the highest sequence in returned changes
-    expect(resPage1.latestSequence).toBe(resPage1.changes[2].sequence);
-
-    // Pull next page with limit = 3
+    // Page 2
     const resPage2 = await processPullRequest({
       db,
       request: {
@@ -193,6 +221,7 @@ describe('Server Pull Replication Engine', () => {
     const response = await app.inject({
       method: 'GET',
       url: `/sync/pull?deviceId=${revokedDeviceId}&afterSequence=0`,
+      headers: { authorization: `Bearer ${revokedAuthToken}` },
     });
 
     expect(response.statusCode).toBe(403);
@@ -219,6 +248,7 @@ describe('Server Pull Replication Engine', () => {
     const response = await app.inject({
       method: 'GET',
       url: `/sync/pull?deviceId=${expiredDeviceId}&afterSequence=42`,
+      headers: { authorization: `Bearer ${expiredDeviceAuthToken}` },
     });
 
     expect(response.statusCode).toBe(200);

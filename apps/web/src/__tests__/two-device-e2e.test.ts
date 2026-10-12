@@ -10,16 +10,34 @@ import {
   type PullTransport,
 } from '@fieldcore/sync';
 
+// ---------------------------------------------------------------------------
+// Live-server guard
+//
+// This test suite makes real HTTP calls to a running FieldCore server and
+// requires a valid JWT (supplied via FIELDCORE_E2E_TOKEN).  Both conditions
+// must be satisfied to produce meaningful results.
+//
+// To run locally:
+//   1. Start the server:  pnpm --filter @fieldcore/server dev
+//   2. Export a seeded token: export FIELDCORE_E2E_TOKEN="<bearer-token>"
+//   3. Run: pnpm --filter @fieldcore/web test
+// ---------------------------------------------------------------------------
+const E2E_TOKEN = process.env.FIELDCORE_E2E_TOKEN;
+
 describe('Stage 6 Two-Device Convergence & Conflict Resolution E2E (Live Server)', () => {
   const DEVICE_A_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
   const DEVICE_B_ID = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
   const USER_ID = '11111111-1111-4111-8111-111111111111';
-  const BASE_URL = 'http://localhost:3000';
+  const BASE_URL = process.env.FIELDCORE_E2E_BASE_URL ?? 'http://localhost:3000';
+
+  /** Build auth headers — include Bearer token when one is available. */
+  const authHeaders = (): Record<string, string> =>
+    E2E_TOKEN ? { Authorization: `Bearer ${E2E_TOKEN}` } : {};
 
   const makePushTransport = (): PushTransport => async (batch) => {
     const res = await fetch(`${BASE_URL}/sync/push`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(batch),
     });
     return res.json();
@@ -31,11 +49,13 @@ describe('Stage 6 Two-Device Convergence & Conflict Resolution E2E (Live Server)
       afterSequence: String(req.afterSequence),
       limit: String(req.limit),
     });
-    const res = await fetch(`${BASE_URL}/sync/pull?${params.toString()}`);
+    const res = await fetch(`${BASE_URL}/sync/pull?${params.toString()}`, {
+      headers: authHeaders(),
+    });
     return res.json();
   };
 
-  it('proves two devices converge to v3 after 409 conflict and KEEP_MINE resolution', async () => {
+  it.skipIf(!E2E_TOKEN)('proves two devices converge to v3 after 409 conflict and KEEP_MINE resolution', async () => {
     // 1. Initialize Device A
     const dbA = new FieldCoreDexie(`fieldcore_test_A_${Date.now()}`);
     const contextA = { userId: USER_ID, deviceId: DEVICE_A_ID, clientId: 'client-a' };

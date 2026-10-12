@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { Database } from '@fieldcore/database';
 import {
   devices,
@@ -7,6 +7,7 @@ import {
   sites,
   inspections,
   measurements,
+  projectMembers,
   changeLog,
   idempotencyRecords,
   conflicts,
@@ -20,10 +21,16 @@ import type {
   EntityType,
   SyncOperation,
 } from '@fieldcore/types';
+import type { VerifiedAccessToken } from './auth/jwt.js';
 
 export interface ProcessPushOptions {
   db: Database;
   request: PushRequest;
+  /**
+   * Verified authentication claims from Bearer token.
+   * When present, claims are authoritative for user and device identity.
+   */
+  authContext?: VerifiedAccessToken;
   /**
    * Optional instrumentation callback fired when the idempotency_records PRIMARY KEY
    * constraint violation (Postgres error 23505) is caught during a concurrent duplicate
@@ -66,21 +73,66 @@ function getDomainTable(entityType: EntityType) {
 }
 
 /**
+ * Resolves the target project ID for any entity operation.
+ */
+async function resolveProjectId(
+  tx: any,
+  op: SyncOperation,
+  existing: any
+): Promise<string | null> {
+  if (op.entityType === 'PROJECT') {
+    return op.entityId;
+  }
+  if (op.entityType === 'SITE') {
+    return (existing?.projectId ?? (op.payload as any)?.projectId ?? null) as string | null;
+  }
+  if (op.entityType === 'INSPECTION') {
+    const siteId = (existing?.siteId ?? (op.payload as any)?.siteId) as string | undefined;
+    if (!siteId) return null;
+    const [site] = await tx
+      .select({ projectId: sites.projectId })
+      .from(sites)
+      .where(eq(sites.id, siteId));
+    return site?.projectId ?? null;
+  }
+  if (op.entityType === 'MEASUREMENT') {
+    const inspectionId = (existing?.inspectionId ?? (op.payload as any)?.inspectionId) as string | undefined;
+    if (!inspectionId) return null;
+    const [insp] = await tx
+      .select({ siteId: inspections.siteId })
+      .from(inspections)
+      .where(eq(inspections.id, inspectionId));
+    if (!insp?.siteId) return null;
+    const [site] = await tx
+      .select({ projectId: sites.projectId })
+      .from(sites)
+      .where(eq(sites.id, insp.siteId));
+    return site?.projectId ?? null;
+  }
+  return null;
+}
+
+/**
  * Processes a batch push request with per-operation transaction isolation,
  * concurrency-safe idempotency via DB constraints, and conflict classification.
  */
 export async function processPushRequest({
   db,
   request,
+  authContext,
   onIdempotencyConstraintRace,
   skipFastPathForOperationIds,
 }: ProcessPushOptions): Promise<PushResponse> {
+  // Use server-authoritative identity from JWT claims if available; fall back to request body for backwards compatibility
+  const effectiveDeviceId = authContext?.deviceId ?? request.deviceId;
+  const effectiveUserId = authContext?.sub ?? request.operations[0]?.userId;
+
   // 1. Device authentication & revalidation pre-check:
   // Checked once before per-operation loop gates the entire batch.
   const [device] = await db
     .select()
     .from(devices)
-    .where(eq(devices.id, request.deviceId));
+    .where(eq(devices.id, effectiveDeviceId));
 
   if (!device || device.isRevoked) {
     return {
@@ -140,6 +192,40 @@ export async function processPushRequest({
 
         const nowIso = new Date().toISOString();
 
+        // Project membership authorization check
+        const projectId = await resolveProjectId(tx, op, existing);
+        const isNewProjectCreate = op.entityType === 'PROJECT' && op.operationType === 'CREATE' && !existing;
+        let isAuthorized = false;
+
+        if (isNewProjectCreate) {
+          isAuthorized = true;
+        } else if (projectId && effectiveUserId) {
+          const [membership] = await tx
+            .select({ id: projectMembers.id })
+            .from(projectMembers)
+            .where(
+              and(
+                eq(projectMembers.projectId, projectId),
+                eq(projectMembers.userId, effectiveUserId)
+              )
+            )
+            .limit(1);
+          isAuthorized = Boolean(membership);
+        } else if (!effectiveUserId) {
+          isAuthorized = true;
+        }
+
+        if (!isAuthorized) {
+          const unauthorizedResult: PushOperationResult = {
+            operationId: op.operationId,
+            entityId: op.entityId,
+            entityType: op.entityType,
+            status: 'UNAUTHORIZED',
+            error: `User is not authorized for project ${projectId ?? 'unknown'}`,
+          };
+          return unauthorizedResult;
+        }
+
         // Branch A: CREATE operation
         if (op.operationType === 'CREATE') {
           if (existing) {
@@ -193,26 +279,45 @@ export async function processPushRequest({
           }
 
           // Apply CREATE
-          await tx.insert(table).values({
+          const insertPayload: Record<string, unknown> = {
             ...op.payload,
             id: op.entityId,
             version: 1,
             isDeleted: false,
             createdAt: op.createdAt ?? nowIso,
             updatedAt: nowIso,
-          });
+          };
+
+          if (op.entityType === 'INSPECTION') {
+            if (effectiveUserId) insertPayload['userId'] = effectiveUserId;
+            insertPayload['deviceId'] = effectiveDeviceId;
+          }
+
+          await tx.insert(table).values(insertPayload as any);
+
+          // If new project was created, auto-enroll creator in project_members
+          if (isNewProjectCreate && effectiveUserId) {
+            await tx.insert(projectMembers).values({
+              id: randomUUID(),
+              projectId: op.entityId,
+              userId: effectiveUserId,
+              role: 'OWNER',
+              createdAt: nowIso,
+            });
+          }
 
           const [change] = await tx
             .insert(changeLog)
             .values({
               entityType: op.entityType,
               entityId: op.entityId,
+              projectId: projectId ?? null,
               version: 1,
               operationType: 'CREATE',
               payload: op.payload,
               isTombstone: false,
-              changedByUserId: op.userId,
-              changedByDeviceId: op.deviceId,
+              changedByUserId: effectiveUserId ?? op.userId,
+              changedByDeviceId: effectiveDeviceId,
               operationId: op.operationId,
               createdAt: nowIso,
             })
@@ -245,7 +350,6 @@ export async function processPushRequest({
         // Branch B: UPDATE or DELETE operations
         if (!existing || existing.isDeleted) {
           // Record deleted or missing -> EDIT_DELETE conflict
-          // Invariant: Non-user-resolvable -> Delete strictly wins, status RESOLVED, resolution KEEP_SERVER
           const conflictRecord: EditDeleteConflictRecord = {
             conflictId: randomUUID(),
             entityType: op.entityType,
@@ -354,13 +458,20 @@ export async function processPushRequest({
         const nextVersion = existing.version + 1;
 
         if (op.operationType === 'UPDATE') {
+          const updatePayload: Record<string, unknown> = {
+            ...op.payload,
+            version: nextVersion,
+            updatedAt: nowIso,
+          };
+
+          if (op.entityType === 'INSPECTION') {
+            if (effectiveUserId) updatePayload['userId'] = effectiveUserId;
+            updatePayload['deviceId'] = effectiveDeviceId;
+          }
+
           await tx
             .update(table)
-            .set({
-              ...op.payload,
-              version: nextVersion,
-              updatedAt: nowIso,
-            })
+            .set(updatePayload)
             .where(eq(table.id, op.entityId));
 
           const [change] = await tx
@@ -368,12 +479,13 @@ export async function processPushRequest({
             .values({
               entityType: op.entityType,
               entityId: op.entityId,
+              projectId: projectId ?? null,
               version: nextVersion,
               operationType: 'UPDATE',
               payload: op.payload,
               isTombstone: false,
-              changedByUserId: op.userId,
-              changedByDeviceId: op.deviceId,
+              changedByUserId: effectiveUserId ?? op.userId,
+              changedByDeviceId: effectiveDeviceId,
               operationId: op.operationId,
               createdAt: nowIso,
             })
@@ -419,12 +531,13 @@ export async function processPushRequest({
           .values({
             entityType: op.entityType,
             entityId: op.entityId,
+            projectId: projectId ?? null,
             version: nextVersion,
             operationType: 'DELETE',
             payload: op.payload,
             isTombstone: true,
-            changedByUserId: op.userId,
-            changedByDeviceId: op.deviceId,
+            changedByUserId: effectiveUserId ?? op.userId,
+            changedByDeviceId: effectiveDeviceId,
             operationId: op.operationId,
             createdAt: nowIso,
           })
@@ -464,8 +577,6 @@ export async function processPushRequest({
         String(err?.detail).includes('already exists');
 
       if (isUniqueViolation) {
-        // Signal to test instrumentation that this exact branch fired (not just that
-        // the outcome looks correct). In production this callback is undefined.
         onIdempotencyConstraintRace?.();
 
         const [committed] = await db
@@ -479,7 +590,6 @@ export async function processPushRequest({
         }
       }
 
-      // Any other unexpected failure -> reject this operation independently
       results.push({
         operationId: op.operationId,
         entityId: op.entityId,
@@ -489,6 +599,27 @@ export async function processPushRequest({
       });
     }
   }
+
+  // 3. Update device lastRevalidatedAt and lastSeenAt on successful active batch
+  // Only successful requests that satisfy security policy can update lastRevalidatedAt.
+  const nowIso = new Date().toISOString();
+  const hasSuccessfulAuthorizedOp = results.some(
+    (r) => r.status === 'APPLIED' || r.status === 'CONFLICT'
+  );
+
+  const deviceUpdates: Record<string, unknown> = {
+    lastSeenAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  if (hasSuccessfulAuthorizedOp) {
+    deviceUpdates.lastRevalidatedAt = nowIso;
+  }
+
+  await db
+    .update(devices)
+    .set(deviceUpdates)
+    .where(eq(devices.id, effectiveDeviceId));
 
   return { results };
 }

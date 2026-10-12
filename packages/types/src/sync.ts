@@ -127,6 +127,7 @@ export interface ServerChangeLog<T = Record<string, unknown>> {
   sequence: number | string; // Monotonically increasing BIGSERIAL
   entityType: EntityType;
   entityId: string;
+  projectId?: string | null;
   version: number;
   operationType: SyncOperationType;
   payload: T;
@@ -276,7 +277,7 @@ export interface PushOperationResult {
   operationId: string;
   entityId: string;
   entityType: EntityType;
-  status: 'APPLIED' | 'CONFLICT' | 'REJECTED' | 'REQUIRES_REVALIDATION' | 'DEVICE_REVOKED';
+  status: 'APPLIED' | 'CONFLICT' | 'REJECTED' | 'REQUIRES_REVALIDATION' | 'DEVICE_REVOKED' | 'UNAUTHORIZED';
   version?: number;
   sequence?: number | string;
   conflict?: ConflictRecord;
@@ -297,6 +298,7 @@ export interface PullRequest {
   deviceId: string;
   afterSequence: number | string;
   limit?: number;
+  scope?: string;
 }
 
 /**

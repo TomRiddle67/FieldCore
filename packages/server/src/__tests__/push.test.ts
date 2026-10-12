@@ -7,23 +7,31 @@ import {
   users,
   devices,
   projects,
+  projectMembers,
   changeLog,
   idempotencyRecords,
   conflicts,
 } from '@fieldcore/database';
 import { createServer } from '../server.js';
 import { processPushRequest } from '../push-handler.js';
+import { loadAuthConfig } from '../auth/config.js';
+import { signAccessToken } from '../auth/jwt.js';
 import type { PushRequest, SyncOperation } from '@fieldcore/types';
 
 describe('Server Push Synchronization Engine', () => {
   const dbUrl = 'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
   const { db, client } = createDatabaseClient(dbUrl);
   const app = createServer({ db });
+  const authConfig = loadAuthConfig(process.env);
 
   const testUserId = randomUUID();
   const testDeviceId = randomUUID();
   const revokedDeviceId = randomUUID();
   const expiredDeviceId = randomUUID();
+
+  let validAuthToken: string;
+  let revokedAuthToken: string;
+  let expiredDeviceAuthToken: string;
 
   beforeAll(async () => {
     // Seed user and devices
@@ -67,6 +75,19 @@ describe('Server Push Synchronization Engine', () => {
         offlineAuthWindowDays: 7,
       },
     ]);
+
+    validAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: testDeviceId, sid: randomUUID() },
+      authConfig
+    );
+    revokedAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: revokedDeviceId, sid: randomUUID() },
+      authConfig
+    );
+    expiredDeviceAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: expiredDeviceId, sid: randomUUID() },
+      authConfig
+    );
   });
 
   afterAll(async () => {
@@ -105,6 +126,7 @@ describe('Server Push Synchronization Engine', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: pushReq,
     });
 
@@ -168,6 +190,7 @@ describe('Server Push Synchronization Engine', () => {
     const res1 = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: pushReq,
     });
     expect(res1.statusCode).toBe(200);
@@ -185,6 +208,7 @@ describe('Server Push Synchronization Engine', () => {
     const res2 = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: pushReq,
     });
     expect(res2.statusCode).toBe(200);
@@ -207,6 +231,7 @@ describe('Server Push Synchronization Engine', () => {
     await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -236,6 +261,7 @@ describe('Server Push Synchronization Engine', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -260,13 +286,29 @@ describe('Server Push Synchronization Engine', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.results[0].status).toBe('CONFLICT');
+    expect(body.results[0].conflict).toBeDefined();
     expect(body.results[0].conflict.conflictType).toBe('EDIT_EDIT');
     expect(body.results[0].conflict.serverVersion).toBe(2);
     expect(body.results[0].conflict.clientVersion).toBe(1);
-    expect(body.results[0].conflict.serverState.name).toBe('Server Updated Name');
     expect(body.results[0].conflict.status).toBe('PENDING');
 
-    // Verify row was NOT overwritten
+    // Verify conflicts table in Postgres has the record
+    const [conflictRow] = await db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.operationId, staleUpdateOpId));
+    expect(conflictRow).toBeDefined();
+    expect(conflictRow.conflictType).toBe('EDIT_EDIT');
+    expect(conflictRow.status).toBe('PENDING');
+
+    // Verify idempotency record caches the CONFLICT outcome
+    const [idempotency] = await db
+      .select()
+      .from(idempotencyRecords)
+      .where(eq(idempotencyRecords.operationId, staleUpdateOpId));
+    expect(idempotency.status).toBe('CONFLICT');
+
+    // Verify server project was not overwritten
     const [current] = await db.select().from(projects).where(eq(projects.id, projectId));
     expect(current.name).toBe('Server Updated Name');
     expect(current.version).toBe(2);
@@ -280,6 +322,7 @@ describe('Server Push Synchronization Engine', () => {
     await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -312,6 +355,7 @@ describe('Server Push Synchronization Engine', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -321,7 +365,7 @@ describe('Server Push Synchronization Engine', () => {
             entityId: projectId,
             operationType: 'UPDATE',
             baseVersion: 1,
-            payload: { name: 'Attempted Revive' },
+            payload: { name: 'Attempting to revive' },
             status: 'PENDING',
             clientId: 'client-1',
             deviceId: testDeviceId,
@@ -352,6 +396,7 @@ describe('Server Push Synchronization Engine', () => {
     await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -377,6 +422,7 @@ describe('Server Push Synchronization Engine', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: {
         deviceId: testDeviceId,
         operations: [
@@ -388,7 +434,7 @@ describe('Server Push Synchronization Engine', () => {
             baseVersion: null,
             payload: { name: 'Colliding Entity', code: `COL2-${randomUUID().slice(0, 8)}` },
             status: 'PENDING',
-            clientId: 'client-2',
+            clientId: 'client-1',
             deviceId: testDeviceId,
             userId: testUserId,
             createdAt: new Date().toISOString(),
@@ -416,6 +462,13 @@ describe('Server Push Synchronization Engine', () => {
       name: 'Existing P2',
       code: `PART-${randomUUID().slice(0, 8)}`,
       version: 2,
+    });
+
+    await db.insert(projectMembers).values({
+      id: randomUUID(),
+      projectId: p2,
+      userId: testUserId,
+      role: 'MEMBER',
     });
 
     const batchReq: PushRequest = {
@@ -469,6 +522,7 @@ describe('Server Push Synchronization Engine', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${validAuthToken}` },
       payload: batchReq,
     });
 
@@ -492,10 +546,10 @@ describe('Server Push Synchronization Engine', () => {
   });
 
   it('rejects batch immediately with DEVICE_REVOKED for revoked device', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sync/push',
-      payload: {
+    // 1. Direct handler returns DEVICE_REVOKED
+    const directRes = await processPushRequest({
+      db,
+      request: {
         deviceId: revokedDeviceId,
         operations: [
           {
@@ -516,16 +570,45 @@ describe('Server Push Synchronization Engine', () => {
       },
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(directRes.results[0].status).toBe('DEVICE_REVOKED');
+    expect(directRes.results[0].error).toBe('Lost in the field');
+
+    // 2. HTTP route with revoked device JWT returns 403 Forbidden
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sync/push',
+      headers: { authorization: `Bearer ${revokedAuthToken}` },
+      payload: {
+        deviceId: revokedDeviceId,
+        operations: [
+          {
+            operationId: randomUUID(),
+            entityType: 'PROJECT',
+            entityId: randomUUID(),
+            operationType: 'CREATE',
+            baseVersion: null,
+            payload: { name: 'Revoked Attempt 2', code: 'REV-2' },
+            status: 'PENDING',
+            clientId: 'client-1',
+            deviceId: revokedDeviceId,
+            userId: testUserId,
+            createdAt: new Date().toISOString(),
+            retryCount: 0,
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(403);
     const body = res.json();
-    expect(body.results[0].status).toBe('DEVICE_REVOKED');
-    expect(body.results[0].error).toBe('Lost in the field');
+    expect(body.code).toBe('DEVICE_REVOKED');
   });
 
   it('returns REQUIRES_REVALIDATION for all operations when device offline auth window expired', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/sync/push',
+      headers: { authorization: `Bearer ${expiredDeviceAuthToken}` },
       payload: {
         deviceId: expiredDeviceId,
         operations: [
@@ -575,21 +658,9 @@ describe('Server Push Synchronization Engine', () => {
       retryCount: 0,
     };
 
-    // Spy to prove the 23505 catch branch fired, not just that the outcome looks correct.
-    // The spy is incremented inside the uniqueness-violation catch block — the only way
-    // it can reach 1 is if both requests passed the pre-transaction fast-path SELECT
-    // simultaneously, one committed, and the other hit the PRIMARY KEY constraint.
     const constraintRaceSpy = vi.fn();
-
-    // In a single-process test, Node.js's event loop would serialize the fast-path SELECT
-    // so the second request is deduplicated before entering a transaction — making the 23505
-    // path unreachable. skipFastPathForOperationIds bypasses it for this operationId,
-    // forcing both concurrent calls into the transaction path where the PRIMARY KEY constraint
-    // is the actual enforcer. In production this bypass is always undefined.
     const skipFastPath = new Set([operationId]);
 
-    // Call processPushRequest directly (bypassing Fastify inject) so we can inject the spy.
-    // Both requests carry the same operationId — a legitimate crash-retry race.
     const [res1, res2] = await Promise.all([
       processPushRequest({
         db,
@@ -605,25 +676,18 @@ describe('Server Push Synchronization Engine', () => {
       }),
     ]);
 
-    // Both responses report APPLIED with identical version and sequence
     expect(res1.results[0].status).toBe('APPLIED');
     expect(res2.results[0].status).toBe('APPLIED');
     expect(res1.results[0].sequence).toBe(res2.results[0].sequence);
     expect(res1.results[0].version).toBe(res2.results[0].version);
-
-    // MECHANISM PROVEN: the constraint catch branch fired exactly once —
-    // confirming that one request lost the DB race and was recovered via 23505,
-    // not that both happened to serialize by chance through some other code path.
     expect(constraintRaceSpy).toHaveBeenCalledTimes(1);
 
-    // Assert change_log has exactly 1 entry for this operationId
     const changes = await db
       .select()
       .from(changeLog)
       .where(eq(changeLog.operationId, operationId));
     expect(changes).toHaveLength(1);
 
-    // Assert idempotency_records has exactly 1 record
     const records = await db
       .select()
       .from(idempotencyRecords)

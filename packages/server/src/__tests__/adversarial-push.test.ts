@@ -8,18 +8,22 @@ import {
   users,
   devices,
   projects,
+  projectMembers,
   changeLog,
   idempotencyRecords,
   conflicts,
 } from '@fieldcore/database';
 import { FieldCoreDexie, PushSyncService, ProjectRepository, type PushTransport } from '@fieldcore/sync';
 import { createServer } from '../server.js';
+import { loadAuthConfig } from '../auth/config.js';
+import { signAccessToken } from '../auth/jwt.js';
 import type { PushRequest, PushResponse } from '@fieldcore/types';
 
 describe('Stage 3 Adversarial Push Sync Suite', () => {
   const dbUrl = 'postgres://fieldcore:fieldcore_dev_password@localhost:5432/fieldcore';
   const { db, client } = createDatabaseClient(dbUrl);
   const app = createServer({ db });
+  const authConfig = loadAuthConfig(process.env);
 
   let dexieDb: FieldCoreDexie;
   let pushService: PushSyncService;
@@ -28,6 +32,8 @@ describe('Stage 3 Adversarial Push Sync Suite', () => {
   const testUserId = randomUUID();
   const testDeviceId = randomUUID();
   const testClientId = 'adversarial-client-1';
+
+  let validAuthToken: string;
 
   beforeAll(async () => {
     // Seed user and device in Postgres
@@ -48,6 +54,11 @@ describe('Stage 3 Adversarial Push Sync Suite', () => {
       lastRevalidatedAt: new Date().toISOString(),
       offlineAuthWindowDays: 7,
     });
+
+    validAuthToken = await signAccessToken(
+      { sub: testUserId, deviceId: testDeviceId, sid: randomUUID() },
+      authConfig
+    );
   });
 
   afterAll(async () => {
@@ -72,6 +83,7 @@ describe('Stage 3 Adversarial Push Sync Suite', () => {
       const httpRes = await app.inject({
         method: 'POST',
         url: '/sync/push',
+        headers: { authorization: `Bearer ${validAuthToken}` },
         payload: req,
       });
 
@@ -132,6 +144,13 @@ describe('Stage 3 Adversarial Push Sync Suite', () => {
       name: 'Conflicting Server P3',
       code: `SRV-${randomUUID().slice(0, 6)}`,
       version: 5,
+    });
+
+    await db.insert(projectMembers).values({
+      id: randomUUID(),
+      projectId: p3.id,
+      userId: testUserId,
+      role: 'MEMBER',
     });
 
     const transport = createFastifyTransport();
@@ -249,6 +268,7 @@ describe('Stage 3 Adversarial Push Sync Suite', () => {
       const httpRes = await app.inject({
         method: 'POST',
         url: '/sync/push',
+        headers: { authorization: `Bearer ${validAuthToken}` },
         payload: req,
       });
       expect(httpRes.statusCode).toBe(200);
